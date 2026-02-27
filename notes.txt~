@@ -1,0 +1,7 @@
+
+
+ThermalModel
+            
+mesh: dict = {}, 
+# groups {"nodes" np.array(Nnodes, 3),
+            # "cells_2d", "cells_3d", "groups_3d", groups_2d}

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "irflow"
+version = "0.1.0"
+description = "Synthetic diagnostic for IR cameras"
+authors = [
+    { name = "Matic Brank" }
+]
+requires-python = ">=3.8"
+dependencies = [
+    # "numpy>=1.20",
+    # "requests",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

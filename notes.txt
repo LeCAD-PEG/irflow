@@ -1,0 +1,16 @@
+
+
+ThermalModel
+
+mesh: dict = {}, 
+
+# groups {"nodes" np.array(Nnodes, 3),
+            # "cells_2d": np.array(Nnodes, 3), "cells_3d": np.array(Nnodes, 4),
+	    "groups_3d" {"group1": np.array() Cell_3D_IDs,  "group2": array() Cell_3D_IDs},
+	    "groups_2d": {"group1": np.array}, {"group2": np.array}}
+
+
+boundary_conditions = {"group1" :{"htc", nparray},
+		    "group2": {"temperature": np.array},
+		    "group3":{"heat_flux": np.array}}
+material_properties = {"group1": {"k":np.array, "density":np.array, "capacity":np.array}}

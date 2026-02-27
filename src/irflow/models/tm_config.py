@@ -1,0 +1,28 @@
+# src/irflow/models/flt_config.py
+from __future__ import annotations
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal, Sequence
+
+BackendName = Literal["Dummy", "OpenFOAM", "ElmerFEM", "heatfem"]
+
+@dataclass(frozen=True)
+class ThermalModelConfig:
+    backend: BackendName
+
+    mesh: dict | str | Path | None = None
+    mesh_type: str | None = None
+    
+    # minimal numerical options
+    output_location: Literal["cells", "nodes"] = "cells"
+    output_fields: tuple[str, ...] = ("q",)
+
+    backend_options: dict[str, Any] = field(default_factory=dict)
+
+    def validate_light(self) -> None:
+        if not self.backend:
+            raise ValueError("backend must be set")
+        if not self.output_fields:
+            raise ValueError("output_fields cannot be empty")
+        if self.output_location not in ("cells", "nodes"):
+            raise ValueError("output_location must be 'cells' or 'nodes'")
