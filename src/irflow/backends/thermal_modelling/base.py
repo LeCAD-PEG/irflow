@@ -15,7 +15,7 @@ class BackendElmerFEM(object):
         self.mesh_type = mesh_type
 
         self.sif_data = None
-        
+
     def get_tm_mesh(self):
         if self.mesh_type.lower() == "elmerfem":
             nodes = np.loadtxt(os.path.join(self.mesh_file, "mesh.nodes"))[-3:, :]
@@ -60,10 +60,9 @@ class BackendElmerFEM(object):
     def read_sif(self, filename=None):
         if not filename:
             filename = self.sif_file
-            
+
 
         with open(filename, "r") as f:
             f_content = f.readlines().split("\n")
-            
+
         self.sif_data = data
-    

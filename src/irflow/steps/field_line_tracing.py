@@ -4,36 +4,87 @@ from pathlib import Path
 import json
 import hashlib
 
-from irflow.core.step import Step, PreparedCase, StepResult, ValidationReport, RunInfo
-from irflow.core.registry import BackendRegistry
-from irflow.core.executor import Executor
-from irflow.models.flt_config import FieldLineTracingConfig
-from irflow.models.resources import Resources
-from irflow.models.artifacts import ArtifactOptions
+from BackendRiptrace import BackendRiptrace
 
-class FieldLineTracing(Step):
+#from irflow.core.step import Step, PreparedCase, StepResult, ValidationReport, RunInfo
+#from irflow.core.registry import BackendRegistry
+#from irflow.core.executor import Executor
+#from irflow.models.flt_config import FieldLineTracingConfig
+#from irflow.models.resources import Resources
+#from irflow.models.artifacts import ArtifactOptions
+
+class FieldLineTracing():
     step_type = "flt"
 
-    def __init__(
-        self,
-        config: FieldLineTracingConfig,
-        *,
-        resources: Resources | None = None,
-        artifacts: ArtifactOptions | None = None,
-        name: str = "flt",
-        enabled: bool = True,
-    ) -> None:
-        self.name = name
-        self.enabled = enabled
-        self.config = config
-        self.backend = str(config.backend)
-        self.resources = resources or Resources()
-        self.artifacts = artifacts or ArtifactOptions()
+    def __init__(self, name='flt_case', enabled=True,
+                 backend_code="riptrace", config=None, resources=None):
+        self.name = name #.validate_light()
+        self.enabled = enabled #.validate()
+        self.config = config #.validate_light()
+        self.backend_code = backend_code #.validate()
+        self.resources = resources # or Resources()
+        #self.artifacts = artifacts or ArtifactOptions()
+        #self.validate_config_light()
 
-        self.config.validate_light()
-        self.resources.validate()
-        self.artifacts.validate()
+        self.shadow = None
+        self.target = None
+        self.equilibrium = None
+        self.numerical_parameters = None
+        self.result = None
 
+        self.backend = self.get_backend(self.backend_code)
+        self.data = self.backend.get_irflow_data()
+
+    def get_backend(self, backend_code):
+        if backend_code.lower() == "riptrace":
+            from irflow.backends import BackendRiptrace
+            target_mesh_path = self.config["target_mesh_path"]
+            shadow_mesh_path = self.config["shadow_mesh_path"]
+            equilibrium_path = self.config["equilibrium_path"]
+            target_mesh_type = self.config["target_mesh_type"]
+            shadow_mesh_type = self.config["shadow_mesh_type"]
+            equilibrium_type = self.config["equilibrium_type"]
+            power_loss = self.config["power_loss"]
+            lambda_main = self.config["lambda_main"]
+            point_omp = self.config["point_omp"]
+
+            return BackendRiptrace(target_mesh_path, shadow_mesh_path,
+                                   equilibrium_path,
+                                   target_mesh_type,
+                                   shadow_mesh_type, equilibrium_type,
+                                   power_loss, lambda_main,
+                                   point_omp)
+
+    def get_flt_data(self, ):
+        return self.backend.get_irflow_data()
+
+    def run_flt_case(self, irflow_case_dir):
+        path = Path(irflow_case_dir)
+        if not path.is_dir():
+            raise FileNotFoundError(f"Directory does not exist: {path}")
+
+        path = Path(irflow_case_dir, "FieldLineTracing")
+        if not path.is_dir():
+            path.mkdir(parents=True)
+
+        path = Path(irflow_case_dir, "FieldLineTracing", self.backend_code)
+        if not path.is_dir():
+            path.mkdir(parents=True)
+
+        # Prepare case (if needed)
+        self.backend.prepare(path)
+
+        # Run case
+        self.backend.run()
+
+        # Get result (heat flux on target grid) from backend
+        heat_flux = self.backend.get_irflow_result()
+        self.result = {"heat_flux": heat_flux}
+
+
+    #def validate_config_light(self, ):
+    #    if self.backend.lower is "riptrace":
+    '''
     def validate(self, upstream_exchange: Path | None, *, registry: BackendRegistry) -> ValidationReport:
         report = ValidationReport(step=self.name)
 
@@ -106,3 +157,4 @@ class FieldLineTracing(Step):
             artifacts_dir=artifacts_dir,
             run_info=run_info,
         )
+    '''
