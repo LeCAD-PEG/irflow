@@ -19,7 +19,7 @@ class BackendRiptrace(object):
                  target_mesh_type,
                  shadow_mesh_type, equilibrium_type,
                  power_loss, lambda_main,
-                 point_omp):
+                 point_omp, numerical_parameters=None):
         super(BackendRiptrace, self).__init__()
 
         # input parameters
@@ -33,43 +33,43 @@ class BackendRiptrace(object):
         self.power_loss = power_loss # Power in the scrape-off layer [W]
         self.lambda_main = lambda_main # main decay length [m]
         self.point_omp = point_omp # Location of separatrix/LCFS at outer midplane R, Z[m]
+        self.numerical_params = numerical_parameters # numerical parameters for FLT
 
-        # backend data format
-        self.target_riptrace = None
-        self.shadow_riptrace = None
-        self.magnetic_field_riptrace = None
-        self.magnetic_flux_riptrace = None
-        self.case_riptrace = None
+        # backend data format (private)
+        self.__target_riptrace = None
+        self.__shadow_riptrace = None
+        self.__magnetic_field_riptrace = None
+        self.__magnetic_flux_riptrace = None
+        self.__case_riptrace = None
 
-        # irflow data format
+        # irflow data format (to be passed back to FLT class)
         self.target_irflow = None
         self.shadow_irflow = None
         self.equilibrium_irflow = None
-        self.numerical_params = None
 
     def get_flt_target_mesh(self, ):
-        self.target_riptrace = Target(name="irflow_target")
+        self.__target_riptrace = Target(name="irflow_target")
         if self.target_mesh_type.lower == "dat":
-            self.target_riptrace.load_dat(self.target_mesh_path)
+            self.__target_riptrace.load_dat(self.target_mesh_path)
         elif self.target_mesh_type.lower == "vtk":
-            self.target_riptrace.load_vtk(self.target_mesh_path)
+            self.__target_riptrace.load_vtk(self.target_mesh_path)
 
-        self.target_irflow = {"nodes": self.target_riptrace.nodes,
-                              "cells_2d": self.target_riptrace.triangles}
+        self.target_irflow = {"nodes": self.__target_riptrace.nodes,
+                              "cells_2d": self.__target_riptrace.triangles}
         return self.target_irflow
 
     def set_flt_target_mesh(self, ):
         pass
 
     def get_flt_shadow_mesh(self, ):
-        self.shadow_riptrace = Shadow(name="irflow_shadow")
+        self.__shadow_riptrace = Shadow(name="irflow_shadow")
         if self.shadow_mesh_type.lower == "dat":
-            self.shadow_riptrace.load_dat(self.shadow_mesh_path)
+            self.__shadow_riptrace.load_dat(self.shadow_mesh_path)
         elif self.shadow_mesh_type.lower == "vtk":
-            self.shadow_riptrace.load_vtk(self.shadow_mesh_path)
+            self.__shadow_riptrace.load_vtk(self.shadow_mesh_path)
 
-        self.shadow_irflow = {"nodes": self.shadow_riptrace.nodes,
-                              "cells_2d": self.shadow_riptrace.triangles}
+        self.shadow_irflow = {"nodes": self.__shadow_riptrace.nodes,
+                              "cells_2d": self.__shadow_riptrace.triangles}
         return self.shadow_irflow
 
     def set_flt_shadow_mesh(self, ):
@@ -77,24 +77,26 @@ class BackendRiptrace(object):
 
     def get_equilibrium(self, ):
         if self.equilibrium_type.lower() == "pfcflux":
-            from riptrace_py.io_utils import read_pfcflux_data
+            from riptrace_py.mag_io_reader import read_pfcflux_data
             self.magnetic_field_riptrace, self.magnetic_flux_riptrace = \
-                read_pfcflux_data(self.equilibrium_path)
+                read_pfcflux_data(self.equilibrium_path.get("txt"))
 
-        elif self.equilibrium_type.lower() == "magtfm":
+        elif self.equilibrium_type.lower() == "smardda":
             from riptrace_py.mag_io_reader import read_magtfm_data
-            fiesta_file_path = self.equilibrium_path[0]
-            ov5_file_path = self.equilibrium_path[1]
+            fiesta_file_path = self.equilibrium_path.get("fiesta")
+            ov5_file_path = self.equilibrium_path.get("ov5")
             self.magnetic_field_riptrace, self.magnetic_flux_riptrace =\
                 read_magtfm_data(fiesta_file_path,
                                  ov5_file_path)
 
-        #elif self.equilibrium_type.lower() == "energopul":
-        #    pass
-
+        elif self.equilibrium_type.lower() == "energopul":
+            # TODO
+            raise NotImplementedError( "Equilibrium type 'energopul' is "
+                                       "recognized but not implemented yet." )            
         else:
-            [self.magnetic_field_riptrace,
-             self.magnetic_flux_riptrace] = self.equilibrium_path
+            # Throw exception
+            raise ValueError( f"Unknown equilibrium type '{self.equilibrium_type}'. "
+                              "Supported types: 'pfcflux' and 'smardda'." )
 
         equilibrium_dict = {"phi_1d": self.magnetic_field_riptrace.phi_1d,
                             "z_1d": self.magnetic_field_riptrace.z_1d,

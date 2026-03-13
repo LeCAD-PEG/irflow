@@ -3,15 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import hashlib
+import numpy as np
 
-from irflow.core.step import Step, PreparedCase, StepResult, ValidationReport, RunInfo
-from irflow.core.registry import BackendRegistry
-from irflow.core.executor import Executor
-from irflow.models.flt_config import FieldLineTracingConfig
-from irflow.models.resources import Resources
-from irflow.models.artifacts import ArtifactOptions
 
-class FieldLineTracing(Step):
+#from BackendRiptrace import BackendRiptrace
+from BackendGyrohit import BackendGyrohit
+
+#from irflow.core.step import Step, PreparedCase, StepResult, ValidationReport, RunInfo
+#from irflow.core.registry import BackendRegistry
+#from irflow.core.executor import Executor
+#from irflow.models.flt_config import FieldLineTracingConfig
+#from irflow.models.resources import Resources
+#from irflow.models.artifacts import ArtifactOptions
+
+class FieldLineTracing():
     step_type = "flt"
 
     def __init__(self, name='flt_case', enabled=True,
@@ -20,22 +25,21 @@ class FieldLineTracing(Step):
         self.enabled = enabled #.validate()
         self.config = config #.validate_light()
         self.backend_code = backend_code #.validate()
-        self.resources = resources or Resources()
+        self.resources = resources # or Resources()
         #self.artifacts = artifacts or ArtifactOptions()
-
-        self.validate_config_light()
+        #self.validate_config_light()
 
         self.shadow = None
         self.target = None
         self.equilibrium = None
         self.numerical_parameters = None
+        self.result = None
 
         self.backend = self.get_backend(self.backend_code)
         self.data = self.backend.get_irflow_data()
 
     def get_backend(self, backend_code):
-        if backend_code.lower() is "riptrace":
-            from irflow.backends import BackendRiptrace
+        if backend_code.lower() == "riptrace":
             target_mesh_path = self.config["target_mesh_path"]
             shadow_mesh_path = self.config["shadow_mesh_path"]
             equilibrium_path = self.config["equilibrium_path"]
@@ -52,12 +56,24 @@ class FieldLineTracing(Step):
                                    shadow_mesh_type, equilibrium_type,
                                    power_loss, lambda_main,
                                    point_omp)
-            
 
-    def get_flt_data(self, ):
-        return self.backend.get_irflow_data()
+        elif backend_code.lower() == "gyrohit":
+            target_mesh_path = self.config["target_mesh_path"]
+            shadow_mesh_path = self.config["shadow_mesh_path"]
+            equilibrium_path = self.config["equilibrium_path"]
+            target_mesh_type = self.config["target_mesh_type"]
+            shadow_mesh_type = self.config["shadow_mesh_type"]
+            equilibrium_type = self.config["equilibrium_type"]
 
-    def run_flt_case(self, irflow_case_dir):
+            return BackendGyrohit(target_mesh_path, shadow_mesh_path,
+                                  equilibrium_path,
+                                  target_mesh_type,
+                                  shadow_mesh_type, equilibrium_type)
+
+    #def get_flt_data(self, ):
+    #    return self.backend.get_irflow_data()
+
+    def run(self, irflow_case_dir):
         path = Path(irflow_case_dir)
         if not path.is_dir():
             raise FileNotFoundError(f"Directory does not exist: {path}")
@@ -66,31 +82,43 @@ class FieldLineTracing(Step):
         if not path.is_dir():
             path.mkdir(parents=True)
 
-        path = Path(irflow_case_dir, "FieldLineTracing", self.backend_code)
-        if not path.is_dir():
-            path.mkdir(parents=True)
+        #path = Path(irflow_case_dir, "FieldLineTracing")
+        #if not path.is_dir():
+        #    path.mkdir(parents=True)
 
         # Prepare case (if needed)
-        self.backend.prepare(path)
+        #self.backend.prepare(path)
 
         # Run case
-        self.backend.run()
+        self.backend.run(path)
 
         # Get result (heat flux on target grid) from backend
-        result = self.backend.get_irflow_result()
+        heat_flux = self.backend.get_heat_flux()
+        self.result = {"heat_flux": heat_flux}
 
+    def get_irflow_pass_data(self, ):
+
+        # Pass only heat flux coodinates of heat flux 
+        nodes = self.backend.get_irflow_data()["target"]["nodes"]
+        cells = np.array(self.backend.get_irflow_data()["target"]["cells_2d"]).astype("int")
+        heat_flux = self.backend.get_heat_flux()
+
+        # Gather node coordinates for each cell
+        cell_nodes = nodes[cells] # shape (Ncells, 3 nodes, 3 coords)
+                                  # Compute centers by averaging over
+                                  # the 3 nodes
+        cell_centers = cell_nodes.mean(axis=1) # shape (Ncells, 3)
+        irflow_pass_data = {"xyz": cell_centers, "heat_flux": heat_flux}
         
-                
-        
-        
+        return irflow_pass_data
+    
+
+
+
 
     #def validate_config_light(self, ):
     #    if self.backend.lower is "riptrace":
-            
-            
-        
-
-
+    '''
     def validate(self, upstream_exchange: Path | None, *, registry: BackendRegistry) -> ValidationReport:
         report = ValidationReport(step=self.name)
 
@@ -163,3 +191,4 @@ class FieldLineTracing(Step):
             artifacts_dir=artifacts_dir,
             run_info=run_info,
         )
+    '''
