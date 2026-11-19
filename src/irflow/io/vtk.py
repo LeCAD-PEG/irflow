@@ -4,7 +4,8 @@
 - Temperature: a ``.pvd`` collection (opens as a time series in ParaView) pointing to one
   ``.vtp`` file per time, each with point array ``temperature``.
 - Camera images: a ``.pvd`` collection pointing to one ``.vti`` image per time, each with
-  cell array ``radiance`` (one cell per pixel) and field array ``wavelength_range``.
+  cell arrays ``radiance`` and ``apparent_temperature`` (one cell per pixel) and field arrays
+  ``wavelength_range`` and ``assumed_emissivity``.
 """
 
 from __future__ import annotations
@@ -138,7 +139,9 @@ def save_images(images: CameraImages, directory: Path) -> Path:
     for index in range(len(images.times)):
         grid = pv.ImageData(dimensions=(n_columns + 1, n_rows + 1, 1))
         grid.cell_data["radiance"] = images.radiance[index, ::-1, :].ravel()
+        grid.cell_data["apparent_temperature"] = images.apparent_temperature[index, ::-1, :].ravel()
         grid.field_data["wavelength_range"] = np.array(images.wavelength_range)
+        grid.field_data["assumed_emissivity"] = np.array([images.assumed_emissivity])
         file_name = f"image_{index:04d}.vti"
         grid.save(series_dir / file_name)
         files.append(f"images/{file_name}")
@@ -151,13 +154,25 @@ def save_images(images: CameraImages, directory: Path) -> Path:
 def load_images(path: str | Path) -> CameraImages:
     """Read camera images from a ``.pvd`` collection written by irflow."""
     times, files = read_collection(path)
-    grids = [pv.read(file) for file in files]
+    grids = []
+    for file in files:
+        grid = pv.read(file)
+        if not isinstance(grid, pv.ImageData):
+            raise ValueError(f"{file} is not a VTK image (.vti)")
+        grids.append(grid)
 
-    radiance = []
-    for grid in grids:
-        n_columns, n_rows = grid.dimensions[0] - 1, grid.dimensions[1] - 1
-        image = np.asarray(grid.cell_data["radiance"]).reshape(n_rows, n_columns)
-        radiance.append(image[::-1, :])
+    return CameraImages(
+        times=times,
+        radiance=np.array([image_cells(grid, "radiance") for grid in grids]),
+        wavelength_range=tuple(grids[0].field_data["wavelength_range"]),
+        apparent_temperature=np.array(
+            [image_cells(grid, "apparent_temperature") for grid in grids]
+        ),
+        assumed_emissivity=float(grids[0].field_data["assumed_emissivity"][0]),
+    )
 
-    wavelength_range = tuple(grids[0].field_data["wavelength_range"])
-    return CameraImages(times=times, radiance=np.array(radiance), wavelength_range=wavelength_range)
+
+def image_cells(grid: pv.ImageData, name: str) -> np.ndarray:
+    """Cell array ``name`` of a ``.vti`` image as (rows, columns), row 0 = image top."""
+    n_columns, n_rows = grid.dimensions[0] - 1, grid.dimensions[1] - 1
+    return np.asarray(grid.cell_data[name]).reshape(n_rows, n_columns)[::-1, :]

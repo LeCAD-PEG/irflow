@@ -50,10 +50,16 @@ def temperature_field(square_mesh: SurfaceMesh) -> TemperatureField:
 
 @pytest.fixture
 def camera_images() -> CameraImages:
-    """Two images of 3 rows x 4 columns, every pixel with a different value."""
+    """Two images of 3 rows x 4 columns, every pixel with a different value (one NaN)."""
     radiance = np.arange(24.0).reshape(2, 3, 4)
+    apparent_temperature = 300.0 + radiance
+    apparent_temperature[0, 0, 0] = np.nan
     return CameraImages(
-        times=np.array([0.0, 0.5]), radiance=radiance, wavelength_range=(3000.0, 5000.0)
+        times=np.array([0.0, 0.5]),
+        radiance=radiance,
+        wavelength_range=(3000.0, 5000.0),
+        apparent_temperature=apparent_temperature,
+        assumed_emissivity=0.3,
     )
 
 

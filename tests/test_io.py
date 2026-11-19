@@ -42,6 +42,8 @@ def test_images_round_trip(tmp_path: Path, camera_images: CameraImages) -> None:
     np.testing.assert_allclose(loaded.times, camera_images.times)
     np.testing.assert_allclose(loaded.radiance, camera_images.radiance)
     assert loaded.wavelength_range == camera_images.wavelength_range
+    np.testing.assert_allclose(loaded.apparent_temperature, camera_images.apparent_temperature)
+    assert loaded.assumed_emissivity == camera_images.assumed_emissivity
 
 
 def test_images_are_upright_in_vtk(tmp_path: Path, camera_images: CameraImages) -> None:
@@ -50,6 +52,9 @@ def test_images_are_upright_in_vtk(tmp_path: Path, camera_images: CameraImages) 
     grid = pv.read(tmp_path / "images" / "image_0000.vti")
     assert grid.dimensions == (5, 4, 1)
     np.testing.assert_allclose(grid.cell_data["radiance"][:4], camera_images.radiance[0, -1])
+    np.testing.assert_allclose(
+        grid.cell_data["apparent_temperature"][-4:], camera_images.apparent_temperature[0, 0]
+    )
 
 
 def test_save_rejects_unknown_data(tmp_path: Path) -> None:

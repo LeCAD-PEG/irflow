@@ -10,6 +10,14 @@ from irflow.config import check_config
 from irflow.data import CameraImages, HeatFluxField, TemperatureField
 from irflow.io import load_temperature
 
+# Config keys of earlier irflow versions, with what replaced them
+CAMERA_HINT = "the 'camera' dict {'type': 'pinhole', 'position', 'look_at', 'up', 'fov', 'pixels'}"
+REPLACED_KEYS = {key: CAMERA_HINT for key in ("camera_position", "look_at", "up", "fov", "pixels")}
+REPLACED_KEYS["emissivity"] = (
+    "a material, e.g. 'materials': {'sample': {'type': 'grey', 'emissivity': 0.8, "
+    "'reflection': 'diffuse'}} with 'surface_material': 'sample'"
+)
+
 
 class OpticalModel:
     """Optical model step. The backend code is chosen with ``backend_code``.
@@ -54,12 +62,19 @@ class OpticalModel:
         if backend_code.lower() == "raysect":
             from irflow.backends.optical.raysect import BackendRaysect
 
+            for key, replacement in REPLACED_KEYS.items():
+                if key in self.config:
+                    raise ValueError(f"OpticalModel config: '{key}' was replaced by {replacement}")
             check_config(
                 self.config,
-                required=["camera_position", "look_at", "fov", "pixels", "emissivity"],
+                required=["camera"],
                 optional=[
-                    "up",
                     "wavelength_range",
+                    "surface_material",
+                    "materials",
+                    "scene",
+                    "max_reflections",
+                    "assumed_emissivity",
                     "pixel_samples",
                     "spectral_bins",
                     "processes",

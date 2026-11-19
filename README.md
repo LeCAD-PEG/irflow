@@ -45,6 +45,23 @@ Before solving, the thermal model checks that its plasma surface lies on the hea
 surface (catches m/mm mix-ups and shifted meshes); set `mapping_tolerance` [m] in its config
 to change the allowed distance.
 
+The optical step (raysect) takes a camera, materials and optionally further scene components:
+
+```python
+config_optical = {
+    # "pinhole" (position, look_at, up, fov, pixels), "opencv" (camera_matrix, distortion,
+    # r_vector, t_vector, pixels) or "vectors" (file with per-pixel lines of sight)
+    "camera": {"type": "pinhole", "position": [0, 0, 0.5], "look_at": [0, 0, 0],
+               "up": [0, 1, 0], "fov": 2.0, "pixels": [100, 100]},
+    "surface_material": "tungsten",  # default; physical (Fresnel + Kirchhoff emission)
+    "materials": {"SiO2": {"type": "grey", "emissivity": 0.8, "reflection": "diffuse"}},
+    "scene": [{"mesh": "housing.vtp", "material": "tungsten", "temperature": 373.0}],
+}
+```
+
+Each image holds the band radiance and the apparent temperature, which assumes the emissivity
+of the target (surface) material unless `assumed_emissivity` is given.
+
 Configs are plain dicts. They are checked when a step is created, before anything runs:
 missing keys, misspelled keys (with a "did you mean ..." hint) and bad `time_stepping`
 values raise a `ValueError` listing all problems.

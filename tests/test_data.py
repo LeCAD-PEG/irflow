@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -39,19 +41,38 @@ def test_temperature_must_match_times_and_nodes(square_mesh: SurfaceMesh) -> Non
 
 
 def test_steady_temperature_has_one_time(square_mesh: SurfaceMesh) -> None:
-    field = TemperatureField(mesh=square_mesh, times=0.0, temperature=np.zeros((1, 4)))
+    field = TemperatureField(mesh=square_mesh, times=0.0, temperature=np.zeros((1, 4)))  # type: ignore[arg-type]
     assert field.times.shape == (1,)
+
+
+def images(**changes: Any) -> CameraImages:
+    """One image of 3 rows x 4 columns, with ``changes`` to the constructor arguments."""
+    arguments: dict[str, Any] = {
+        "times": [0.0],
+        "radiance": np.zeros((1, 3, 4)),
+        "wavelength_range": (3e3, 5e3),
+        "apparent_temperature": np.full((1, 3, 4), np.nan),
+        "assumed_emissivity": 1.0,
+    }
+    return CameraImages(**{**arguments, **changes})
 
 
 def test_images_must_match_times() -> None:
     with pytest.raises(ValueError, match="radiance"):
-        CameraImages(times=[0.0, 1.0], radiance=np.zeros((1, 3, 4)), wavelength_range=(3e3, 5e3))
+        images(times=[0.0, 1.0])
     with pytest.raises(ValueError, match="radiance"):
-        CameraImages(times=[0.0], radiance=np.zeros((3, 4)), wavelength_range=(3e3, 5e3))
+        images(radiance=np.zeros((3, 4)))
+    with pytest.raises(ValueError, match="apparent_temperature"):
+        images(apparent_temperature=np.zeros((1, 4, 3)))
 
 
 def test_images_need_increasing_wavelength_range() -> None:
     with pytest.raises(ValueError, match="wavelength_range"):
-        CameraImages(times=[0.0], radiance=np.zeros((1, 3, 4)), wavelength_range=(5e3, 3e3))
-    images = CameraImages(times=0.0, radiance=np.zeros((1, 3, 4)), wavelength_range=[3e3, 5e3])
-    assert images.wavelength_range == (3000.0, 5000.0)
+        images(wavelength_range=(5e3, 3e3))
+    assert images(times=0.0, wavelength_range=[3e3, 5e3]).wavelength_range == (3000.0, 5000.0)
+
+
+@pytest.mark.parametrize("emissivity", [0.0, 1.5])
+def test_images_need_valid_assumed_emissivity(emissivity: float) -> None:
+    with pytest.raises(ValueError, match="assumed_emissivity"):
+        images(assumed_emissivity=emissivity)
