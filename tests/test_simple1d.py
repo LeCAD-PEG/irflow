@@ -11,6 +11,7 @@ import pytest
 
 from irflow import ThermalModel
 from irflow.backends.tm.simple1d import (
+    AUTO_FIRST_CELL_FACTOR,
     BackBoundary,
     BackendSimple1D,
     Material,
@@ -153,6 +154,10 @@ def test_node_values_are_area_weighted_averages() -> None:
     )
     assert np.isnan(node_values[:, 4]).all()
 
+    filled = cell_to_node_average(mesh, cell_values, unused_value=110.0)
+    assert np.all(filled[:, 4] == 110.0)
+    np.testing.assert_allclose(filled[:, :4], node_values[:, :4])
+
 
 def test_runs_as_thermal_model_step(
     tmp_path: Path, config: dict[str, Any], heat_flux_field: HeatFluxField
@@ -181,14 +186,29 @@ def test_graded_grid() -> None:
     assert np.all(np.diff(cell_sizes) > 0)
 
 
-def test_warns_when_surface_cell_is_too_coarse(config: dict[str, Any]) -> None:
+def test_first_cell_is_chosen_from_time_step(config: dict[str, Any]) -> None:
     config["time_stepping"] = {"type": "transient", "time_step": 1e-3, "end_time": 0.1}
-    with pytest.warns(UserWarning, match="first_cell_size"):
-        BackendSimple1D(config)
-
-    config["first_cell_size"] = 5e-6
     with warnings.catch_warnings():
-        warnings.simplefilter("error")
+        warnings.simplefilter("error")  # the automatic grid is fine enough: no warning
+        backend = BackendSimple1D(config)
+
+    diffusivity = 5.0 / (3060.0 * 1000.0)
+    expected = AUTO_FIRST_CELL_FACTOR * np.sqrt(diffusivity * 1e-3)
+    assert backend.nodes_x[1] == pytest.approx(expected, rel=1e-6)
+    assert backend.nodes_x[-1] == pytest.approx(0.01)
+
+
+def test_automatic_first_cell_is_never_coarser_than_uniform(config: dict[str, Any]) -> None:
+    # A very long time step would ask for a first cell thicker than the uniform cell
+    config["time_stepping"] = {"type": "transient", "time_step": 1e4, "end_time": 1e4}
+    backend = BackendSimple1D(config)
+    np.testing.assert_allclose(backend.nodes_x, np.linspace(0.0, 0.01, 51))
+
+
+def test_warns_when_given_surface_cell_is_too_coarse(config: dict[str, Any]) -> None:
+    config["time_stepping"] = {"type": "transient", "time_step": 1e-3, "end_time": 0.1}
+    config["first_cell_size"] = 2e-4  # the uniform cell of 51 points
+    with pytest.warns(UserWarning, match="first_cell_size"):
         BackendSimple1D(config)
 
 
@@ -233,3 +253,18 @@ def test_only_constant_material_properties(config: dict[str, Any]) -> None:
     }
     with pytest.raises(NotImplementedError, match="heat_conductivity"):
         BackendSimple1D(config)
+
+
+def test_unused_nodes_get_configured_temperature(config: dict[str, Any]) -> None:
+    # Node 3 belongs to no triangle
+    nodes = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [5, 5, 5]], dtype=float)
+    mesh = SurfaceMesh(nodes=nodes, triangles=np.array([[0, 1, 2]]))
+    heat_flux = HeatFluxField(mesh=mesh, heat_flux=np.array([1.0e6]))
+
+    backend = BackendSimple1D(config)
+    backend.run(Path("unused"), heat_flux)
+    assert backend.get_result().temperature[0, 3] == 110.0
+
+    backend = BackendSimple1D({**config, "unused_node_temperature": 300.0})
+    backend.run(Path("unused"), heat_flux)
+    assert backend.get_result().temperature[0, 3] == 300.0

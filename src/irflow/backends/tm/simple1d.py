@@ -34,6 +34,11 @@ from irflow.data import HeatFluxField, SurfaceMesh, TemperatureField
 
 DEFAULT_N_POINTS = 51
 DEFAULT_INITIAL_TEMPERATURE = 300.0  # [K]
+DEFAULT_UNUSED_NODE_TEMPERATURE = 110.0  # [K], nodes that belong to no triangle
+# Default size of the grid cell at the heated surface, as a fraction of the diffusion length
+# sqrt(alpha dt) of one time step. Smaller cells do not help: what remains is the time error
+# of backward Euler (about -12 % on the first step, -1.4 % by step 10 for a constant flux).
+AUTO_FIRST_CELL_FACTOR = 0.25
 
 
 @dataclass(frozen=True)
@@ -220,10 +225,12 @@ def triangle_areas(mesh: SurfaceMesh) -> np.ndarray:
     return 0.5 * np.linalg.norm(edge_cross, axis=1)
 
 
-def cell_to_node_average(mesh: SurfaceMesh, cell_values: np.ndarray) -> np.ndarray:
+def cell_to_node_average(
+    mesh: SurfaceMesh, cell_values: np.ndarray, unused_value: float = np.nan
+) -> np.ndarray:
     """Area-weighted average of per-triangle values at the nodes: (Nt, M) -> (Nt, N).
 
-    Nodes that belong to no triangle (or only to triangles of zero area) get NaN.
+    Nodes that belong to no triangle (or only to triangles of zero area) get ``unused_value``.
     """
     areas = triangle_areas(mesh)
     node_ids = mesh.triangles.ravel()
@@ -234,7 +241,7 @@ def cell_to_node_average(mesh: SurfaceMesh, cell_values: np.ndarray) -> np.ndarr
     total_area = np.asarray(weights.sum(axis=1)).ravel()
 
     weighted_sums = weights @ cell_values.T  # (N, Nt)
-    node_values = np.full(weighted_sums.shape, np.nan)
+    node_values = np.full(weighted_sums.shape, unused_value, dtype=float)
     has_area = total_area > 0
     node_values[has_area] = weighted_sums[has_area] / total_area[has_area, None]
     return node_values.T
@@ -256,8 +263,10 @@ class BackendSimple1D(ThermalModelBackend):
     - ``initial_temperature`` [K], default 300: whole slab at t = 0 (transient only).
     - ``n_points``, default 51: grid points through the thickness (transient only).
     - ``first_cell_size`` [m], optional: size of the grid cell at the heated surface; cells
-      then grow geometrically towards the back. Default: uniform grid. Use it when the heat
-      penetrates only a thin layer during the run (depth ~ sqrt(k t / (rho c))).
+      grow geometrically towards the back. Default: chosen from the time step,
+      ``AUTO_FIRST_CELL_FACTOR * sqrt(k dt / (rho c))`` (uniform grid if that is coarser).
+    - ``unused_node_temperature`` [K], default 110: value given to mesh nodes that belong to
+      no triangle (they are not part of the surface and are never seen by a camera).
     """
 
     def __init__(self, config: Mapping[str, Any]) -> None:
@@ -267,18 +276,36 @@ class BackendSimple1D(ThermalModelBackend):
         self.initial_temperature = positive_float(
             config.get("initial_temperature", DEFAULT_INITIAL_TEMPERATURE), "initial_temperature"
         )
+        self.unused_node_temperature = positive_float(
+            config.get("unused_node_temperature", DEFAULT_UNUSED_NODE_TEMPERATURE),
+            "unused_node_temperature",
+        )
 
         self.n_points = config.get("n_points", DEFAULT_N_POINTS)
         if isinstance(self.n_points, bool) or not isinstance(self.n_points, (int, np.integer)):
             raise ValueError(f"simple1d: 'n_points' must be an integer, got {self.n_points!r}")
         if self.n_points < 3:
             raise ValueError(f"simple1d: 'n_points' must be at least 3, got {self.n_points}")
+
+        self.read_time_stepping(config.get("time_stepping", {"type": "steady"}))
+
         first_cell_size = config.get("first_cell_size")
         if first_cell_size is not None:
             first_cell_size = positive_float(first_cell_size, "first_cell_size")
+        elif self.is_transient:
+            # Automatic: resolve the layer heated during one time step; never coarser than
+            # the uniform grid
+            uniform_size = self.thickness / (self.n_points - 1)
+            diffusion_length = np.sqrt(self.material.diffusivity * self.time_step)
+            first_cell_size = min(AUTO_FIRST_CELL_FACTOR * diffusion_length, uniform_size)
         self.nodes_x = slab_grid(self.thickness, self.n_points, first_cell_size)
+        if self.is_transient:
+            self.warn_if_surface_cell_too_thick()
 
-        time_stepping = config.get("time_stepping", {"type": "steady"})
+        self.result: TemperatureField | None = None
+
+    def read_time_stepping(self, time_stepping: Mapping[str, Any]) -> None:
+        """Set ``is_transient``, ``time_step`` and ``n_steps`` from the time stepping config."""
         kind = str(require_key(time_stepping, "type", "time_stepping")).lower()
         if kind == "steady":
             self.is_transient = False
@@ -304,13 +331,10 @@ class BackendSimple1D(ThermalModelBackend):
                     f"simple1d: end_time ({end_time}) must be a multiple of time_step "
                     f"({self.time_step})"
                 )
-            self.warn_if_surface_cell_too_thick()
         else:
             raise ValueError(
                 f"simple1d time_stepping type must be 'steady' or 'transient', got {kind!r}"
             )
-
-        self.result: TemperatureField | None = None
 
     def warn_if_surface_cell_too_thick(self) -> None:
         """Warn if the first ~10 time steps heat a layer thinner than the surface cell."""
@@ -343,7 +367,9 @@ class BackendSimple1D(ThermalModelBackend):
             times, surface_temperature = np.array([0.0]), surface[np.newaxis, :]
 
         mesh = heat_flux.mesh
-        node_temperature = cell_to_node_average(mesh, surface_temperature)
+        node_temperature = cell_to_node_average(
+            mesh, surface_temperature, unused_value=self.unused_node_temperature
+        )
         self.result = TemperatureField(mesh=mesh, times=times, temperature=node_temperature)
 
     def solve_transient(self, heat_flux: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

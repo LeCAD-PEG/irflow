@@ -106,7 +106,12 @@ class ThermalModel:
                 self.config,
                 required=["thickness", "material_properties", "back_boundary"],
                 optional=common_optional
-                + ["initial_temperature", "n_points", "first_cell_size"],
+                + [
+                    "initial_temperature",
+                    "n_points",
+                    "first_cell_size",
+                    "unused_node_temperature",
+                ],
                 where=where,
             )
             return BackendSimple1D(self.config)
