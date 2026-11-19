@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import numpy as np
-
-if TYPE_CHECKING:
-    from irflow.backends.tm.elmerfem import BackendElmerFEM
-    from irflow.backends.tm.openfoam.backend import BackendOpenFOAM
+from irflow.backends.base import ThermalModelBackend
+from irflow.data import HeatFluxField, TemperatureField
+from irflow.io import load_heat_flux
 
 
 class ThermalModel:
-    """Thermal model step. The backend code is chosen with ``backend_code``."""
+    """Thermal model step. The backend code is chosen with ``backend_code``.
+
+    By default the heat flux comes from the previous (field line tracing) step. To run the
+    thermal model on its own, give ``input_data``: a :class:`HeatFluxField` or the path of a
+    heat flux file saved by irflow (e.g. ``FieldLineTracing/heat_flux.vtp``). For other
+    codes' files use :func:`irflow.io.load_heat_flux` with the right ``array_name``.
+
+    Optional config key ``mapping_tolerance`` [m]: largest allowed distance between the
+    plasma surface and the heat flux points (default: twice the longest edge of either mesh).
+    """
 
     dir_name = "ThermalModel"
 
@@ -24,17 +31,23 @@ class ThermalModel:
         backend_code: str = "elmerfem",
         config: dict[str, Any] | None = None,
         resources: Any = None,
+        input_data: HeatFluxField | str | Path | None = None,
     ) -> None:
         self.name = name
         self.enabled = enabled
         self.backend_code = backend_code
         self.config = config or {}
         self.resources = resources
-        self.result: dict[str, np.ndarray] | None = None
+        self.result: TemperatureField | None = None
+
+        if isinstance(input_data, (str, Path)):
+            input_data = load_heat_flux(input_data)
+        self.heat_flux: HeatFluxField | None = input_data
+        self.has_own_input = input_data is not None
 
         self.backend = self.get_backend(backend_code)
 
-    def get_backend(self, backend_code: str) -> BackendElmerFEM | BackendOpenFOAM:
+    def get_backend(self, backend_code: str) -> ThermalModelBackend:
         """Create the backend for ``backend_code`` from the step config."""
         # Backends are imported here so that only the chosen code has to be installed.
         time_stepping = self.config.get("time_stepping", {"type": "steady"})
@@ -68,25 +81,28 @@ class ThermalModel:
             f"Unknown thermal model backend '{backend_code}'. Supported: 'elmerfem', 'openfoam'."
         )
 
-    def set_irflow_pass_data(self, data: dict[str, Any]) -> None:
-        """Receive heat flux from the previous step: ``{"xyz": (M, 3), "heat_flux": (M,)}``."""
-        self.backend.set_irflow_pass_data(data)
+    def set_irflow_pass_data(self, data: HeatFluxField | TemperatureField) -> None:
+        """Receive the heat flux from the previous step."""
+        if not isinstance(data, HeatFluxField):
+            raise TypeError(f"ThermalModel needs a HeatFluxField, got {type(data).__name__}")
+        self.heat_flux = data
 
     def run(self, step_dir: str | Path) -> None:
         """Run the backend in ``step_dir`` (must exist) and store the surface temperature."""
         step_dir = Path(step_dir)
         if not step_dir.is_dir():
             raise FileNotFoundError(f"Directory does not exist: {step_dir}")
+        if self.heat_flux is None:
+            raise RuntimeError(
+                "ThermalModel has no heat flux: run a FieldLineTracing step before it "
+                "or give input_data."
+            )
 
-        self.backend.run(step_dir)
-        self.result = self.backend.get_temperature()
+        self.backend.run(step_dir, self.heat_flux, self.config.get("mapping_tolerance"))
+        self.result = self.backend.get_result()
 
-    def get_irflow_pass_data(self) -> dict[str, np.ndarray]:
-        """Return the plasma-facing surface temperature for the optical step.
-
-        Keys: ``"nodes"`` (N, 3), ``"cells_2d"`` (M, 3), ``"times"`` (Nt,) and
-        ``"temperature"`` (Nt, N) at the nodes. A steady run has one time.
-        """
+    def get_irflow_pass_data(self) -> TemperatureField:
+        """Plasma-facing surface temperature, for the optical step."""
         if self.result is None:
             raise RuntimeError("ThermalModel has no result yet: call run() first.")
         return self.result

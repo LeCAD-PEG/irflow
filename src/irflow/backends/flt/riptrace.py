@@ -6,11 +6,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from riptrace_py.mag_riptrace_case import RipTraceCase
-from riptrace_py.mag_riptrace_mesh import Shadow, Target
+from riptrace_py.riptrace_case import RipTraceCase
+from riptrace_py.riptrace_mesh import Shadow, Target
+
+from irflow.backends.base import FieldLineTracingBackend
+from irflow.data import HeatFluxField, SurfaceMesh
 
 
-class BackendRiptrace:
+class BackendRiptrace(FieldLineTracingBackend):
     """Connector between the irflow field line tracing step and Riptrace."""
 
     def __init__(
@@ -71,14 +74,12 @@ class BackendRiptrace:
 
     def get_shadow_mesh_riptrace(self) -> Shadow:
         self.__shadow_riptrace = Shadow(name="irflow_shadow")
-        if self.shadow_mesh_type.lower() == "dat":
-            self.__shadow_riptrace.load_dat(self.shadow_mesh_path)
-        elif self.shadow_mesh_type.lower() == "vtk":
+        if self.shadow_mesh_type.lower() == "vtk":
             self.__shadow_riptrace.load_vtk_mesh(self.shadow_mesh_path)
         else:
             raise ValueError(
                 f"Unknown shadow mesh type '{self.shadow_mesh_type}'. "
-                "Supported types: 'vtk' and 'dat'."
+                "Supported type: 'vtk'."
             )
         return self.__shadow_riptrace
 
@@ -89,14 +90,14 @@ class BackendRiptrace:
 
     def get_equilibrium(self) -> dict[str, Any]:
         if self.equilibrium_type.lower() == "pfcflux":
-            from riptrace_py.mag_io_reader import read_pfcflux_data
+            from riptrace_py.io_reader import read_pfcflux_data
 
             self.__magnetic_field_riptrace, self.__magnetic_flux_riptrace = read_pfcflux_data(
                 self.equilibrium_path.get("txt")
             )
 
         elif self.equilibrium_type.lower() == "smardda":
-            from riptrace_py.mag_io_reader import read_magtfm_data
+            from riptrace_py.io_reader import read_magtfm_data
 
             self.__magnetic_field_riptrace, self.__magnetic_flux_riptrace = read_magtfm_data(
                 self.equilibrium_path.get("fiesta"), self.equilibrium_path.get("ov5")
@@ -124,7 +125,7 @@ class BackendRiptrace:
 
     def get_numerical_params(self) -> dict[str, Any]:
         if self.numerical_params is None:
-            from riptrace_py.mag_riptrace_case import RipTraceNumericalParams
+            from riptrace_py.riptrace_case import RipTraceNumericalParams
 
             self.numerical_params = RipTraceNumericalParams()
 
@@ -164,14 +165,11 @@ class BackendRiptrace:
         riptrace_case_dir = Path(case_dir) / "riptrace_case"
         self.case_riptrace = RipTraceCase(
             "smardda_case",
-            self.__target_riptrace,
-            self.__shadow_riptrace,
-            self.__magnetic_field_riptrace,
-            self.__magnetic_flux_riptrace,
-            self.power_loss,
-            self.lambda_main,
-            None,
-            riptrace_case_dir,
+            target=self.__target_riptrace,
+            shadow=self.__shadow_riptrace,
+            magnetic_field=self.__magnetic_field_riptrace,
+            magnetic_flux=self.__magnetic_flux_riptrace,
+            case_path=riptrace_case_dir,
         )
 
         self.case_riptrace.compute_wetted_area()
@@ -179,8 +177,10 @@ class BackendRiptrace:
             self.power_loss, self.lambda_main, 1 / 2, self.point_omp
         )
 
-    def get_heat_flux(self) -> np.ndarray:
+    def get_result(self) -> HeatFluxField:
         """Heat flux on each target triangle [W/m^2]."""
         if self.case_riptrace is None:
             raise RuntimeError("Riptrace has not been run yet.")
-        return self.case_riptrace.target.Q
+        target = self.case_riptrace.target
+        mesh = SurfaceMesh(nodes=target.nodes, triangles=target.triangles)
+        return HeatFluxField(mesh=mesh, heat_flux=np.ravel(target.Q))

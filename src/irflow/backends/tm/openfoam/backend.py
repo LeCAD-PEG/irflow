@@ -8,10 +8,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyvista as pv
 
+from irflow.backends.base import ThermalModelBackend
 from irflow.backends.tm.openfoam.case_builder import OpenFOAMCaseBuilder
 from irflow.backends.tm.openfoam.templates import write_openfoam_sh_script
 from irflow.code_paths import get_code_path
+from irflow.data import HeatFluxField, SurfaceMesh, TemperatureField
+from irflow.mapping import check_overlap
 
 
 def resolve_openfoam_bashrc(openfoam_bashrc: str | None) -> Path:
@@ -27,6 +31,16 @@ def resolve_openfoam_bashrc(openfoam_bashrc: str | None) -> Path:
     if not bashrc_path.is_file():
         raise FileNotFoundError(f"OpenFOAM bashrc does not exist: {bashrc_path}")
     return bashrc_path
+
+
+def write_script(path: Path, of_case_path: Path, bashrc: Path, commands: list[str]) -> Path:
+    """Write an executable bash script that loads OpenFOAM and runs ``commands`` in the case."""
+    with open(path, "w") as script:
+        write_openfoam_sh_script(script, of_case_path, bashrc)
+        for command in commands:
+            script.write(command + "\n")
+    path.chmod(0o755)
+    return path
 
 
 def run_script(script_path: Path) -> subprocess.CompletedProcess[str]:
@@ -60,42 +74,43 @@ def list_time_dirs(of_case_path: Path) -> list[Path]:
     return sorted(time_dirs, key=lambda p: float(p.name))
 
 
-def read_patch_temperature(of_case_path: Path, region: str, patch: str) -> dict[str, np.ndarray]:
-    """Read nodal temperature on ``patch`` for every written time from foamToVTK output.
-
-    Returns ``{"nodes": (N, 3), "cells_2d": (M, 3), "times": (Nt,), "temperature": (Nt, N)}``.
-    """
-    import pyvista as pv
-
-    # foamToVTK numbers files by time index (0, 1, 2, ...), not by simulation time
+def list_patch_vtk_files(of_case_path: Path, region: str, patch: str) -> list[Path]:
+    """foamToVTK files of one patch, sorted by time index (files are numbered 0, 1, 2, ...)."""
     vtk_patch_dir = of_case_path / "VTK" / region / patch
     vtk_files = sorted(
         vtk_patch_dir.glob(f"{patch}_*.vtk"), key=lambda p: int(p.stem.rsplit("_", 1)[-1])
     )
     if not vtk_files:
         raise FileNotFoundError(f"No VTK files found in {vtk_patch_dir}")
+    return vtk_files
 
+
+def read_patch_surface(vtk_file: Path) -> tuple[SurfaceMesh, pv.PolyData]:
+    """Read a foamToVTK patch file as a triangular surface."""
+    surface = pv.read(vtk_file).extract_surface().triangulate()
+    return SurfaceMesh(nodes=np.asarray(surface.points), triangles=surface.regular_faces), surface
+
+
+def read_patch_temperature(of_case_path: Path, region: str, patch: str) -> TemperatureField:
+    """Read nodal temperature on ``patch`` for every written time from foamToVTK output."""
+    vtk_files = list_patch_vtk_files(of_case_path, region, patch)
     times = np.array([float(p.name) for p in list_time_dirs(of_case_path)])
     if len(times) != len(vtk_files):
         raise RuntimeError(
-            f"Found {len(times)} time directories but {len(vtk_files)} VTK files in "
-            f"{vtk_patch_dir}; cannot match files to times."
+            f"Found {len(times)} time directories but {len(vtk_files)} VTK files for patch "
+            f"'{patch}'; cannot match files to times."
         )
 
-    surface = pv.read(vtk_files[0]).extract_surface().triangulate()
-    temperature = np.empty((len(vtk_files), surface.n_points))
+    mesh, _ = read_patch_surface(vtk_files[0])
+    temperature = np.empty((len(vtk_files), mesh.n_nodes))
     for i, vtk_file in enumerate(vtk_files):
-        temperature[i] = pv.read(vtk_file).point_data["T"]
+        _, surface = read_patch_surface(vtk_file)
+        temperature[i] = surface.point_data["T"]
 
-    return {
-        "nodes": np.asarray(surface.points, dtype=float),
-        "cells_2d": np.asarray(surface.regular_faces, dtype=int),
-        "times": times,
-        "temperature": temperature,
-    }
+    return TemperatureField(mesh=mesh, times=times, temperature=temperature)
 
 
-class BackendOpenFOAM:
+class BackendOpenFOAM(ThermalModelBackend):
     """Connector between the irflow thermal model step and OpenFOAM."""
 
     def __init__(
@@ -124,23 +139,15 @@ class BackendOpenFOAM:
         self.time_step = time_stepping["time_step"] if self.is_transient else None
         self.end_time = time_stepping["end_time"] if self.is_transient else None
 
-        self.irflow_pass_data: dict[str, np.ndarray] | None = None
-        self.temperature: dict[str, np.ndarray] | None = None
+        self.result: TemperatureField | None = None
 
-    def set_irflow_pass_data(self, irflow_pass_data: dict[str, np.ndarray]) -> None:
-        """Heat flux from the previous step: ``{"xyz": (M, 3), "heat_flux": (M,)}``."""
-        self.irflow_pass_data = irflow_pass_data
-
-    def run(self, step_dir: Path) -> None:
+    def run(
+        self, step_dir: Path, heat_flux: HeatFluxField, mapping_tolerance: float | None = None
+    ) -> None:
         """Build the OpenFOAM case in ``step_dir``, run it and read the plasma-patch temperature."""
         step_dir = Path(step_dir)
         if not step_dir.is_dir():
             raise FileNotFoundError(f"Directory does not exist: {step_dir}")
-        if self.irflow_pass_data is None:
-            raise RuntimeError(
-                "OpenFOAM backend has no heat flux input: run a field line tracing step "
-                "before the thermal model."
-            )
 
         builder = OpenFOAMCaseBuilder(
             case_root=step_dir,
@@ -152,20 +159,23 @@ class BackendOpenFOAM:
             boundary_conditions=self.boundary_conditions,
             material_properties=self.material_properties,
         )
-        builder.build_case(self.irflow_pass_data["xyz"], self.irflow_pass_data["heat_flux"])
+        builder.build_case(heat_flux.mesh.cell_centers(), heat_flux.heat_flux)
         of_case_path = builder.case_path
+        bashrc = self.openfoam_bashrc
 
         # 1) Convert mesh and split it into regions by cell zones
-        script_prepare_path = of_case_path / "prepare.sh"
-        with open(script_prepare_path, "w") as script:
-            write_openfoam_sh_script(script, of_case_path, self.openfoam_bashrc)
-            script.write(
-                f"ideasUnvToFoam {shlex.quote(self.mesh_file)} "
-                f"-case {shlex.quote(str(of_case_path))}\n"
+        run_script(
+            write_script(
+                of_case_path / "prepare.sh",
+                of_case_path,
+                bashrc,
+                [
+                    f"ideasUnvToFoam {shlex.quote(self.mesh_file)} "
+                    f"-case {shlex.quote(str(of_case_path))}",
+                    "splitMeshRegions -cellZones -overwrite",
+                ],
             )
-            script.write("splitMeshRegions -cellZones -overwrite\n")
-        script_prepare_path.chmod(0o755)
-        run_script(script_prepare_path)
+        )
 
         # 2) Write fields and dictionaries that depend on the regions
         builder.write_T()
@@ -174,7 +184,6 @@ class BackendOpenFOAM:
         builder.write_fvSchemes(regions=True)
         builder.write_fvSolution(regions=True)
 
-        # 3) Solve and export the plasma-facing patch to VTK
         region_map = builder.get_region_boundary_map()
         plasma_region = next(
             (region for region, patches in region_map.items() if self.plasma_bc_name in patches),
@@ -185,32 +194,44 @@ class BackendOpenFOAM:
                 f"Plasma boundary '{self.plasma_bc_name}' not found in any region: {region_map}"
             )
         other_patches = [p for p in region_map[plasma_region] if p != self.plasma_bc_name]
+        export_plasma_patch = (
+            f"foamToVTK -region {plasma_region} -excludePatches '({' '.join(other_patches)})'"
+        )
 
-        script_run_path = of_case_path / "run.sh"
-        with open(script_run_path, "w") as script:
-            write_openfoam_sh_script(script, of_case_path, self.openfoam_bashrc)
-            script.write("foamMultiRun\n")
-            script.write(
-                f"foamToVTK -region {plasma_region} "
-                f"-excludePatches '({' '.join(other_patches)})'\n"
+        # 3) Check that the plasma patch lies on the heat flux mesh before solving
+        run_script(
+            write_script(
+                of_case_path / "export_plasma_patch.sh",
+                of_case_path,
+                bashrc,
+                [export_plasma_patch + " -time 0 -noInternal"],
             )
-        script_run_path.chmod(0o755)
+        )
+        initial_files = list_patch_vtk_files(of_case_path, plasma_region, self.plasma_bc_name)
+        plasma_mesh, _ = read_patch_surface(initial_files[0])
+        distance = check_overlap(heat_flux.mesh, plasma_mesh, mapping_tolerance)
+        print(f"Plasma patch lies within {distance:.3g} m of the heat flux surface.")
 
-        # Empty '.foam' file lets ParaView/pyvista open the case
-        (of_case_path / "case.foam").touch()
-
-        run_script(script_run_path)
+        # 4) Solve and export the plasma-facing patch to VTK for every time
+        (of_case_path / "case.foam").touch()  # lets ParaView/pyvista open the case
+        run_script(
+            write_script(
+                of_case_path / "run.sh",
+                of_case_path,
+                bashrc,
+                ["foamMultiRun", export_plasma_patch],
+            )
+        )
         print("foamMultiRun finished!")
 
-        temperature = read_patch_temperature(of_case_path, plasma_region, self.plasma_bc_name)
+        result = read_patch_temperature(of_case_path, plasma_region, self.plasma_bc_name)
         if not self.is_transient:
             # steady state: only the converged solution is compared with the IR image
-            temperature["times"] = temperature["times"][-1:]
-            temperature["temperature"] = temperature["temperature"][-1:]
-        self.temperature = temperature
+            result = TemperatureField(result.mesh, result.times[-1:], result.temperature[-1:])
+        self.result = result
 
-    def get_temperature(self) -> dict[str, np.ndarray]:
-        """Plasma-facing surface temperature, see :func:`read_patch_temperature`."""
-        if self.temperature is None:
+    def get_result(self) -> TemperatureField:
+        """Plasma-facing surface temperature for every written time."""
+        if self.result is None:
             raise RuntimeError("OpenFOAM has not been run yet.")
-        return self.temperature
+        return self.result

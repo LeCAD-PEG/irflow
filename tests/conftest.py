@@ -9,6 +9,7 @@ import pytest
 import pyvista as pv
 
 import irflow.code_paths
+from irflow.data import HeatFluxField, SurfaceMesh, TemperatureField
 
 
 @pytest.fixture(autouse=True)
@@ -30,23 +31,30 @@ def openfoam_bashrc(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def two_triangles() -> dict[str, np.ndarray]:
-    """A unit square in the z=0 plane split into two triangles, with heat flux per triangle."""
+def square_mesh() -> SurfaceMesh:
+    """A unit square in the z=0 plane split into two triangles."""
     nodes = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
-    cells = np.array([[0, 1, 2], [0, 2, 3]])
-    heat_flux = np.array([1.0e6, 2.0e6])
-    return {"nodes": nodes, "cells_2d": cells, "heat_flux": heat_flux}
+    return SurfaceMesh(nodes=nodes, triangles=np.array([[0, 1, 2], [0, 2, 3]]))
 
 
 @pytest.fixture
-def gyrohit_target_vtk(tmp_path: Path, two_triangles: dict[str, np.ndarray]) -> Path:
+def heat_flux_field(square_mesh: SurfaceMesh) -> HeatFluxField:
+    return HeatFluxField(mesh=square_mesh, heat_flux=np.array([1.0e6, 2.0e6]))
+
+
+@pytest.fixture
+def temperature_field(square_mesh: SurfaceMesh) -> TemperatureField:
+    temperature = np.array([[300.0, 300.0, 300.0, 300.0], [310.0, 320.0, 330.0, 340.0]])
+    return TemperatureField(mesh=square_mesh, times=np.array([0.0, 0.5]), temperature=temperature)
+
+
+@pytest.fixture
+def gyrohit_target_vtk(tmp_path: Path, heat_flux_field: HeatFluxField) -> Path:
     """Legacy VTK unstructured grid like GYROHIT output, with cell array ``Heat-flux[W/m^2]``."""
-    n_cells = len(two_triangles["cells_2d"])
-    cells = np.hstack([np.full((n_cells, 1), 3), two_triangles["cells_2d"]]).ravel()
-    grid = pv.UnstructuredGrid(
-        cells, np.full(n_cells, pv.CellType.TRIANGLE), two_triangles["nodes"]
-    )
-    grid.cell_data["Heat-flux[W/m^2]"] = two_triangles["heat_flux"]
+    mesh = heat_flux_field.mesh
+    cells = np.hstack([np.full((mesh.n_cells, 1), 3), mesh.triangles]).ravel()
+    grid = pv.UnstructuredGrid(cells, np.full(mesh.n_cells, pv.CellType.TRIANGLE), mesh.nodes)
+    grid.cell_data["Heat-flux[W/m^2]"] = heat_flux_field.heat_flux
 
     path = tmp_path / "target.vtk"
     grid.save(path, binary=False)

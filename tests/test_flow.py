@@ -1,4 +1,4 @@
-"""Tests for IRFlow: case directory handling and passing data between steps."""
+"""Tests for IRFlow: case directory handling, saving results and passing data between steps."""
 
 from __future__ import annotations
 
@@ -11,25 +11,30 @@ from typing import Any
 import pytest
 
 from irflow import IRFlow
+from irflow.data import HeatFluxField
 
 
 class RecordingStep:
     """Minimal stand-in for a simulation step that records what IRFlow does with it."""
 
-    def __init__(self, name: str, enabled: bool = True) -> None:
+    def __init__(
+        self, name: str, result: HeatFluxField, enabled: bool = True, has_own_input: bool = False
+    ) -> None:
         self.name = name
         self.enabled = enabled
+        self.has_own_input = has_own_input
         self.dir_name = name
+        self.result = result
         self.run_dir: Path | None = None
-        self.received: dict[str, Any] | None = None
+        self.received: Any = None
 
     def run(self, step_dir: Path) -> None:
         self.run_dir = step_dir
 
-    def get_irflow_pass_data(self) -> dict[str, Any]:
-        return {"from": self.name}
+    def get_irflow_pass_data(self) -> HeatFluxField:
+        return self.result
 
-    def set_irflow_pass_data(self, data: dict[str, Any]) -> None:
+    def set_irflow_pass_data(self, data: Any) -> None:
         self.received = data
 
 
@@ -39,6 +44,11 @@ def test_rejects_case_names_that_are_not_plain_directories(
 ) -> None:
     with pytest.raises(ValueError):
         IRFlow(case_name=case_name, root_dir=tmp_path, steps=[])
+
+
+def test_rejects_unknown_save_format(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Unsupported save formats"):
+        IRFlow(case_name="case", root_dir=tmp_path, steps=[], save_formats=["csv"])
 
 
 def test_existing_case_dir_is_kept_without_overwrite(tmp_path: Path) -> None:
@@ -61,19 +71,43 @@ def test_existing_case_dir_is_replaced_with_overwrite(tmp_path: Path) -> None:
     assert not (case_dir / "old.txt").exists()
 
 
-def test_steps_run_in_own_dirs_and_pass_data_forward(tmp_path: Path) -> None:
-    first, second = RecordingStep("first"), RecordingStep("second")
+def test_steps_run_in_own_dirs_save_results_and_pass_data_forward(
+    tmp_path: Path, heat_flux_field: HeatFluxField
+) -> None:
+    first = RecordingStep("first", heat_flux_field)
+    second = RecordingStep("second", heat_flux_field)
 
     IRFlow(case_name="case", root_dir=tmp_path, steps=[first, second]).run()
 
     assert first.run_dir == tmp_path / "case" / "first"
     assert second.run_dir == tmp_path / "case" / "second"
-    assert first.run_dir.is_dir() and second.run_dir.is_dir()
-    assert second.received == {"from": "first"}
+    assert (first.run_dir / "heat_flux.vtp").is_file()
+    assert second.received is heat_flux_field
 
 
-def test_disabled_step_is_skipped_and_gets_no_data(tmp_path: Path) -> None:
-    first, second = RecordingStep("first"), RecordingStep("second", enabled=False)
+def test_no_files_saved_without_formats(tmp_path: Path, heat_flux_field: HeatFluxField) -> None:
+    step = RecordingStep("first", heat_flux_field)
+    IRFlow(case_name="case", root_dir=tmp_path, steps=[step], save_formats=[]).run()
+    assert list((tmp_path / "case" / "first").iterdir()) == []
+
+
+def test_step_with_own_input_is_not_overwritten(
+    tmp_path: Path, heat_flux_field: HeatFluxField
+) -> None:
+    first = RecordingStep("first", heat_flux_field)
+    second = RecordingStep("second", heat_flux_field, has_own_input=True)
+
+    IRFlow(case_name="case", root_dir=tmp_path, steps=[first, second]).run()
+
+    assert second.run_dir is not None
+    assert second.received is None
+
+
+def test_disabled_step_is_skipped_and_gets_no_data(
+    tmp_path: Path, heat_flux_field: HeatFluxField
+) -> None:
+    first = RecordingStep("first", heat_flux_field)
+    second = RecordingStep("second", heat_flux_field, enabled=False)
 
     IRFlow(case_name="case", root_dir=tmp_path, steps=[first, second]).run()
 
@@ -85,7 +119,8 @@ def test_importing_irflow_does_not_import_backends() -> None:
     # Fresh interpreter, because other tests import backends into this one
     code = (
         "import sys, irflow; "
-        "print(any(name.startswith('irflow.backends') for name in sys.modules))"
+        "print(any(name.startswith('irflow.backends.flt.') "
+        "or name.startswith('irflow.backends.tm.') for name in sys.modules))"
     )
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
     result = subprocess.run(

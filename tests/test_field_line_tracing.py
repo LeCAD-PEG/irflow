@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from irflow import FieldLineTracing
-from irflow.backends.flt.gyrohit import read_triangle_vtk
+from irflow.data import HeatFluxField
 
 
 def gyrohit_config(target: Path, shadow: str | None = None) -> dict[str, str | None]:
@@ -22,25 +22,23 @@ def gyrohit_config(target: Path, shadow: str | None = None) -> dict[str, str | N
     }
 
 
-def test_read_triangle_vtk(gyrohit_target_vtk: Path, two_triangles: dict) -> None:
-    data = read_triangle_vtk(gyrohit_target_vtk)
-    np.testing.assert_allclose(data["nodes"], two_triangles["nodes"])
-    np.testing.assert_array_equal(data["cells_2d"], two_triangles["cells_2d"])
-    np.testing.assert_allclose(data["cell_data"]["Heat-flux[W/m^2]"], two_triangles["heat_flux"])
-
-
-def test_gyrohit_pass_data_is_flux_at_cell_centres(
-    tmp_path: Path, gyrohit_target_vtk: Path, two_triangles: dict
+def test_gyrohit_result_is_heat_flux_on_target(
+    tmp_path: Path, gyrohit_target_vtk: Path, heat_flux_field: HeatFluxField
 ) -> None:
     flt = FieldLineTracing(backend_code="gyrohit", config=gyrohit_config(gyrohit_target_vtk))
     flt.run(tmp_path)
 
-    data = flt.get_irflow_pass_data()
+    result = flt.get_irflow_pass_data()
 
-    expected_centres = np.array([[2 / 3, 1 / 3, 0.0], [1 / 3, 2 / 3, 0.0]])
-    np.testing.assert_allclose(data["xyz"], expected_centres)
-    np.testing.assert_allclose(data["heat_flux"], two_triangles["heat_flux"])
-    np.testing.assert_allclose(flt.result["heat_flux"], two_triangles["heat_flux"])
+    np.testing.assert_allclose(result.heat_flux, heat_flux_field.heat_flux)
+    np.testing.assert_allclose(result.mesh.nodes, heat_flux_field.mesh.nodes)
+    np.testing.assert_array_equal(result.mesh.triangles, heat_flux_field.mesh.triangles)
+
+
+def test_no_result_before_run(gyrohit_target_vtk: Path) -> None:
+    flt = FieldLineTracing(backend_code="gyrohit", config=gyrohit_config(gyrohit_target_vtk))
+    with pytest.raises(RuntimeError, match="no result yet"):
+        flt.get_irflow_pass_data()
 
 
 def test_gyrohit_cannot_run_the_code_itself(tmp_path: Path, gyrohit_target_vtk: Path) -> None:
@@ -63,5 +61,6 @@ def test_unknown_backend() -> None:
 
 def test_first_step_takes_no_upstream_data(gyrohit_target_vtk: Path) -> None:
     flt = FieldLineTracing(backend_code="gyrohit", config=gyrohit_config(gyrohit_target_vtk))
+    assert flt.has_own_input
     with pytest.raises(ValueError):
-        flt.set_irflow_pass_data({})
+        flt.set_irflow_pass_data(None)

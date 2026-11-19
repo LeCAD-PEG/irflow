@@ -25,6 +25,24 @@ tm = ThermalModel(backend_code="openfoam", config={...})
 IRFlow(case_name="my_case", root_dir="~/irflow_studies", steps=[flt, tm]).run()
 ```
 
+Each step runs in `<root_dir>/<case_name>/<StepName>/` and saves its result there
+(`save_formats=["vtk"]` by default): `FieldLineTracing/heat_flux.vtp` and
+`ThermalModel/temperature.pvd` (a time series that opens directly in ParaView).
+
+A step can also run on its own with data you provide:
+
+```python
+from irflow.io import load_heat_flux
+
+heat_flux = load_heat_flux("riptrace_target.vtk", array_name="Q_cells")  # or a heat_flux.vtp
+tm = ThermalModel(backend_code="elmerfem", config={...}, input_data=heat_flux)
+IRFlow(case_name="tm_only", root_dir="~/irflow_studies", steps=[tm]).run()
+```
+
+Before solving, the thermal model checks that its plasma surface lies on the heat flux
+surface (catches m/mm mix-ups and shifted meshes); set `mapping_tolerance` [m] in its config
+to change the allowed distance.
+
 Complete examples are in `cases/`.
 
 ## Test

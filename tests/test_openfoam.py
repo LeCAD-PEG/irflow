@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import pyvista as pv
 
 from irflow import ThermalModel
 from irflow.backends.tm.openfoam.backend import (
@@ -20,6 +19,8 @@ from irflow.backends.tm.openfoam.templates import (
     write_openfoam_plasma_bc,
     write_openfoam_sh_script,
 )
+from irflow.data import SurfaceMesh
+from irflow.io.vtk import to_polydata
 
 BOUNDARY_FILE = """FoamFile
 {
@@ -114,29 +115,26 @@ def test_time_dirs_are_sorted_numerically(tmp_path: Path) -> None:
     assert [p.name for p in list_time_dirs(tmp_path)] == ["0", "1e-05", "0.02", "0.1"]
 
 
-def test_read_patch_temperature_time_series(tmp_path: Path, two_triangles: dict) -> None:
+def test_read_patch_temperature_time_series(tmp_path: Path, square_mesh: SurfaceMesh) -> None:
     case = tmp_path / "openfoam_case"
     patch_dir = case / "VTK" / "sample" / "plasmaBC"
     patch_dir.mkdir(parents=True)
 
-    faces = np.hstack([np.full((2, 1), 3), two_triangles["cells_2d"]]).ravel()
-    times = ["0", "0.1", "0.2"]
-    for index, time in enumerate(times):
+    for index, time in enumerate(["0", "0.1", "0.2"]):
         (case / time).mkdir()
-        patch = pv.PolyData(two_triangles["nodes"], faces)
+        patch = to_polydata(square_mesh)
         patch.point_data["T"] = 300.0 + 10.0 * index + np.arange(4)
         patch.save(patch_dir / f"plasmaBC_{index}.vtk", binary=False)
 
     result = read_patch_temperature(case, "sample", "plasmaBC")
 
-    np.testing.assert_allclose(result["times"], [0.0, 0.1, 0.2])
-    assert result["temperature"].shape == (3, 4)
-    np.testing.assert_allclose(result["temperature"][2], [320.0, 321.0, 322.0, 323.0])
-    assert result["cells_2d"].shape == (2, 3)
-    assert result["nodes"].shape == (4, 3)
+    np.testing.assert_allclose(result.times, [0.0, 0.1, 0.2])
+    assert result.temperature.shape == (3, 4)
+    np.testing.assert_allclose(result.temperature[2], [320.0, 321.0, 322.0, 323.0])
+    assert (result.mesh.n_nodes, result.mesh.n_cells) == (4, 2)
 
 
-def test_thermal_model_needs_heat_flux_before_run(tmp_path: Path, openfoam_bashrc: Path) -> None:
+def test_openfoam_backend_needs_bashrc_and_reports_no_result(openfoam_bashrc: Path) -> None:
     config = {
         "mesh_file": "mesh.unv",
         "mesh_type": "unv",
@@ -145,8 +143,5 @@ def test_thermal_model_needs_heat_flux_before_run(tmp_path: Path, openfoam_bashr
         "openfoam_bashrc": str(openfoam_bashrc),
     }
     tm = ThermalModel(backend_code="openfoam", config=config)
-
-    with pytest.raises(RuntimeError, match="no heat flux input"):
-        tm.run(tmp_path)
-    with pytest.raises(RuntimeError, match="no result yet"):
-        tm.get_irflow_pass_data()
+    with pytest.raises(RuntimeError, match="not been run"):
+        tm.backend.get_result()

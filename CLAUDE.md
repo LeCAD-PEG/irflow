@@ -60,28 +60,38 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
 
 | Path | Role |
 |---|---|
-| `src/irflow/flow.py` | `IRFlow`: case dir (`overwrite=False` by default), runs steps, passes data |
+| `src/irflow/flow.py` | `IRFlow`: case dir (`overwrite=False`), runs steps, saves results (`save_formats`), passes data |
+| `src/irflow/data.py` | `SurfaceMesh`, `HeatFluxField`, `TemperatureField` (validated, SI units) |
+| `src/irflow/io/` | `save()` / `load_heat_flux()` / `load_temperature()`; `vtk.py` (`.vtp`, `.pvd` series) |
+| `src/irflow/mapping.py` | `check_overlap`: TM plasma surface must lie on the FLT surface |
 | `src/irflow/code_paths.py` | machine config for external codes |
 | `src/irflow/steps/field_line_tracing.py` | `FieldLineTracing`; backends imported lazily |
-| `src/irflow/steps/thermal_model.py` | `ThermalModel`; backends imported lazily |
-| `src/irflow/backends/flt/riptrace.py` | Riptrace in-process via `riptrace_py` |
-| `src/irflow/backends/flt/gyrohit.py` | reads precomputed GYROHIT heat flux from VTK (pyvista) |
-| `src/irflow/backends/tm/openfoam/` | `backend.py` (run + read time series), `case_builder.py` (dict writers), `templates.py` + `template_files/` (coded BC, shell header) |
-| `src/irflow/backends/tm/elmerfem.py` | sif parser/writer, UNV→Elmer mesh, per-triangle BCs |
+| `src/irflow/steps/thermal_model.py` | `ThermalModel`; `input_data=` to run alone; `mapping_tolerance` config |
+| `src/irflow/backends/base.py` | ABCs `FieldLineTracingBackend`, `ThermalModelBackend` (`run`, `get_result`) |
+| `src/irflow/backends/flt/riptrace.py` | Riptrace in-process via `riptrace_py` (`riptrace_case`, `riptrace_mesh`, `io_reader`) |
+| `src/irflow/backends/flt/gyrohit.py` | reads precomputed GYROHIT heat flux from VTK |
+| `src/irflow/backends/tm/openfoam/` | `backend.py` (run, pre-solve overlap check, read time series), `case_builder.py` (dict writers), `templates.py` + `template_files/` (coded BC, shell header) |
+| `src/irflow/backends/tm/elmerfem.py` | sif parser/writer, UNV→Elmer mesh, per-triangle BCs, pyvista output reader |
 | `cases/` | study drivers; large data in `cases/*/data/` (git-ignored) |
 | `tests/` | pytest suite (no external codes needed) |
 | `external/io_utils` | git submodule (user's io_utils); irflow no longer imports it |
 
-### Data passed between steps (Phase 1, still plain dicts)
+### Data passed between steps (`irflow.data`)
 
-- FLT → TM: `{"xyz": (M, 3) cell centres, "heat_flux": (M,) W/m²}`
-- TM → optical: `{"nodes": (N, 3), "cells_2d": (M, 3), "times": (Nt,), "temperature": (Nt, N) K}`
+- FLT → TM: `HeatFluxField(mesh, heat_flux (M,) W/m²)` — saved as `FieldLineTracing/heat_flux.vtp`
+- TM → optical: `TemperatureField(mesh, times (Nt,), temperature (Nt, N) K)` — saved as
+  `ThermalModel/temperature.pvd` (+ `temperature/temperature_NNNN.vtp`)
+- A step with user `input_data` has `has_own_input = True`; IRFlow then does not overwrite it.
+- Overlap check default tolerance: 0.5 × longest edge of either mesh; distance is measured from
+  TM face centres to the FLT *surface* (resolution independent).
 
 ## Known issues (open)
 
-- ElmerFEM: one BC per plasma triangle (won't scale); output reader is unverified, reads
-  ElmerPost-style text from `elmer_temperatures.vtk` with plasma group name `"htc1"` hardcoded
-  and only one time; `read_sif` relies on block headers appearing before keys.
+- ElmerFEM: one BC per plasma triangle (won't scale; MAST-U case has 6180 BCs);
+  `read_sif` relies on block headers appearing before keys; mesh_type `"mesh"` path does not
+  copy `mesh.header`/`mesh.names` into the step dir (untested). Elmer needs short paths —
+  `Mesh DB` is written relative to the step dir for that reason.
+- Riptrace: current `riptrace_py` has no `Shadow.load_dat`, so only VTK shadow meshes work.
 - OpenFOAM coded BC: brute-force IDW over all FLT points per face per timestep; computes `k(T)`
   itself and only supports constant `kappa` or `kappaCoeffs<8>` — `table` heat conductivity
   would make the solver stop with FatalError.
@@ -89,8 +99,6 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
   SiO2-like defaults; `molWeight` hardcoded.
 - `case_builder.py` and `elmerfem.py` still have >100-char lines and style issues; they are
   left for the templating rework (Phase 4).
-- No check yet that FLT target and TM plasma surface overlap (unit/translation mistakes are
-  silent).
 
 ## Plan and status
 
@@ -103,13 +111,18 @@ Root `pyproject.toml`, src-layout package, drivers in `cases/`, code-paths confi
 (Riptrace import, OpenFOAM `get_temperature` with full time series, TM pass data, outputs no
 longer written to CWD, Elmer `bc_id` parsing for ids ≥ 10), 30 tests.
 
-**Phase 2 — Contracts** (next)
-1. `data.py`: `SurfaceMesh`, `HeatFluxField`, `TemperatureField` dataclasses replacing dicts.
-2. Writers chosen in the user script (VTK now; HDF5/MED later) — each step saves its result.
-3. Step input override (`input=` object or file) so steps can run alone.
-4. `backends/base.py` ABC; adapt Riptrace, Gyrohit, OpenFOAM, Elmer.
-5. `mapping.py` with overlap/distance check (fail above tolerance).
-6. Config dicts → per-backend dataclasses with validation (users may still pass dicts).
+**Phase 2 — Contracts** (items 1–5 done 2026-11-19, uncommitted)
+1. ✅ `data.py`: `SurfaceMesh`, `HeatFluxField`, `TemperatureField` dataclasses replacing dicts.
+2. ✅ `IRFlow(save_formats=["vtk"])` + `irflow.io` (option (a) chosen by user).
+3. ✅ `ThermalModel(input_data=...)` so the thermal model can run alone.
+4. ✅ `backends/base.py` ABCs; Riptrace, Gyrohit, OpenFOAM, Elmer adapted.
+5. ✅ `mapping.py` overlap check (OpenFOAM: exports plasma patch at t=0 before solving).
+6. ⏳ Config validation — design question open (see below).
+
+Verified by real runs (scratch dir): Gyrohit→OpenFOAM mousetrap (10 steps, identical T to
+Phase 1), ElmerFEM alone on MAST-U with old Riptrace `Q_cells` (T identical to the March run),
+Riptrace MAST-U benchmark with current `riptrace_py` (heat flux matches the earlier run; serial
+tracing takes ~10 min).
 
 **Phase 3 — End-to-end with primary backends:** Riptrace → OpenFOAM → raysect
 1. `OpticalModel` step + raysect backend (camera geometry, emissivity, spectral band), one
@@ -123,6 +136,8 @@ longer written to CWD, Elmer `bc_id` parsing for ids ≥ 10), 30 tests.
 4. Golden-file tests for writers; integration tests that skip when a solver is missing.
 
 ## Open questions (ask the user)
+
+- Phase 2 item 6: per-backend config dataclasses vs. validating dict keys only.
 
 - Optical inputs beyond the context file: emissivity / reflectivity per material, camera
   spectral band, and whether the optical scene mesh (for reflections) differs from the TM

@@ -9,9 +9,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyvista as pv
 from scipy.interpolate import NearestNDInterpolator
 
+from irflow.backends.base import ThermalModelBackend
 from irflow.code_paths import get_code_path
+from irflow.data import HeatFluxField, SurfaceMesh, TemperatureField
+from irflow.io.vtk import to_polydata
+from irflow.mapping import check_overlap
 
 
 def elmer_executable(name: str) -> str:
@@ -189,7 +194,7 @@ def is_new_block(line: str) -> bool:
 
 
 # Connector between IR workflow - thermal model and Elmer
-class BackendElmerFEM:
+class BackendElmerFEM(ThermalModelBackend):
     """Connector between the irflow thermal model step and ElmerFEM."""
 
     def __init__(
@@ -214,7 +219,6 @@ class BackendElmerFEM:
         self.elmer_mesh_nodes = None # os.path.join(self.mesh_file, "mesh.nodes")
         self.elmer_mesh_elements = None # os.path.join(self.mesh_file, "mesh.elements")
         self.elmer_mesh_boundary = None # os.path.join(self.mesh_file, "mesh.boundary")
-        self.irflow_pass_data = None
 
         if time_stepping["type"].lower() != "steady":
             self.is_transient = True
@@ -230,7 +234,8 @@ class BackendElmerFEM:
         self.mesh: dict[str, Any] = {}
         self.material_properties: dict[str, Any] = {}
         self.boundary_conditions: dict[str, Any] = {}
-        self.temperature: dict[str, np.ndarray] | None = None
+        self.plasma_triangles: np.ndarray | None = None  # (M, 3) Elmer node indices
+        self.result: TemperatureField | None = None
 
     def get_elmer_mesh(
         self, mesh_type: str, mesh_file: str | Path, dir_path: str | Path | None = None
@@ -409,7 +414,9 @@ class BackendElmerFEM:
 
         return sif_data
 
-    def map_plasma_heat_flux(self, irflow_pass_data: dict[str, np.ndarray]) -> None:
+    def map_plasma_heat_flux(
+        self, heat_flux_field: HeatFluxField, mapping_tolerance: float | None = None
+    ) -> None:
         print("Mapping plasma heat flux to Elmer mesh ...")
 
         ##########################################################################
@@ -451,23 +458,20 @@ class BackendElmerFEM:
         # Get plasma cells
         plasma_cells_IDs = self.mesh["groups_2d"]["group_2d_id_"+str(self.plasma_bc_id)]
         plasma_cells = self.mesh["cells_2d"][plasma_cells_IDs]
-        cell_nodes = self.mesh["nodes"][plasma_cells]
-        cell_centers = cell_nodes.mean(axis=1) # shape (Ncells, 3)
-        
-        # Prepare interpolation function and map to each triangle
+        self.plasma_triangles = plasma_cells
+        plasma_mesh = SurfaceMesh(nodes=self.mesh["nodes"], triangles=plasma_cells)
+        distance = check_overlap(heat_flux_field.mesh, plasma_mesh, mapping_tolerance)
+        print(f"Plasma boundary lies within {distance:.3g} m of the heat flux surface.")
 
-        xyz_flt = irflow_pass_data["xyz"]
-        heat_flux_flt = irflow_pass_data["heat_flux"]
-        interp = NearestNDInterpolator(xyz_flt, heat_flux_flt)
+        # Map heat flux to each plasma triangle (nearest field line tracing triangle)
+        interp = NearestNDInterpolator(
+            heat_flux_field.mesh.cell_centers(), heat_flux_field.heat_flux
+        )
+        heat_flux = interp(plasma_mesh.cell_centers())
 
-        # interpolate values and prepare new boundary_conditions
-        heat_flux = interp(cell_centers)
-
-        from riptrace_py.io_utils import generate_faces_vtk
-        generate_faces_vtk(str(self.case_dir / "plasma_faces.vtk"),
-                           {"nodes": self.mesh["nodes"],
-                            "cells": plasma_cells,
-                            "heat_flux": heat_flux})
+        polydata = to_polydata(plasma_mesh)
+        polydata.cell_data["heat_flux"] = heat_flux
+        polydata.save(self.case_dir / "plasma_heat_flux.vtp")
         bc_ID_plasma_counter = bc_ID_plasma
         target_boundary_plasma_counter = self.plasma_bc_id
 
@@ -524,9 +528,6 @@ class BackendElmerFEM:
             target_boundary_plasma_counter += 1
 
 
-    def set_irflow_pass_data(self, irflow_pass_data: dict[str, np.ndarray]) -> None:
-        """Heat flux from the previous step: ``{"xyz": (M, 3), "heat_flux": (M,)}``."""
-        self.irflow_pass_data = irflow_pass_data
         
 
 
@@ -556,13 +557,13 @@ class BackendElmerFEM:
             if "Body" in bd:
                 body_blocks[bd] = self.sif_data[bd]
 
-        elmer_mesh_dir = Path(dir_path) / Path("elmer_mesh")
-
         with open(file_to_write, 'w') as f:
             f.write("Header\n")
             for key in header_block:
                 if "Mesh DB" in key:
-                    f.write('Mesh DB "'+str(elmer_mesh_dir)+'" "."\n')
+                    # Relative to the step directory, where ElmerSolver runs: Elmer's output
+                    # writer fails on long absolute paths
+                    f.write('Mesh DB "." "elmer_mesh"\n')
                 else:
                     f.write("  "+key+" "+header_block[key]+"\n")
 
@@ -684,6 +685,7 @@ class BackendElmerFEM:
 
     def write_elmer_mesh(self, dir_path: str | Path) -> None:
         dir_path = Path(dir_path) / Path("elmer_mesh")
+        dir_path.mkdir(parents=True, exist_ok=True)
         # In "mesh.nodes" file, node numbering starts from 1, so add 1
         # to all node IDs. Frst and second columns are of type 'int'
         node_IDs = self.elmer_mesh_nodes[:, 0].astype(int) + 1
@@ -701,13 +703,13 @@ class BackendElmerFEM:
         np.savetxt(os.path.join(dir_path, "mesh.elements"), self.elmer_mesh_elements+1, fmt="%d")
         np.savetxt(os.path.join(dir_path, "mesh.boundary"), self.elmer_mesh_boundary+1, fmt="%d")
 
-    def run(self, dir_path: str | Path) -> None:
+    def run(
+        self,
+        dir_path: str | Path,
+        heat_flux: HeatFluxField,
+        mapping_tolerance: float | None = None,
+    ) -> None:
         """Read sif and mesh, map plasma heat flux to BCs, write the case and run ElmerSolver."""
-        if self.irflow_pass_data is None:
-            raise RuntimeError(
-                "ElmerFEM backend has no heat flux input: run a field line tracing step "
-                "before the thermal model."
-            )
         self.case_dir = Path(dir_path)
         self.sif_data = self.read_sif(self.sif_file)
         self.get_elmer_mesh(self.mesh_type, self.mesh_file, self.case_dir)
@@ -715,7 +717,7 @@ class BackendElmerFEM:
         self.material_properties = get_material_properties(self.sif_data)
         self.boundary_conditions = get_boundary_conditions(self.sif_data)
 
-        self.map_plasma_heat_flux(self.irflow_pass_data)
+        self.map_plasma_heat_flux(heat_flux, mapping_tolerance)
         self.write_sif(dir_path)
 
         self.write_elmer_mesh(dir_path)
@@ -731,118 +733,49 @@ class BackendElmerFEM:
         if result.returncode != 0:
             raise RuntimeError("ElmerSolver failed with return code {}".format(result.returncode))
 
-    def read_temperature(self) -> None:
-        """Read nodal temperature on the plasma boundary from the solver output.
+        self.result = self.read_temperature()
 
-        TODO(Phase 4): unverified; the plasma group name "htc1" is hardcoded and only one
-        time is read.
+    def read_temperature(self) -> TemperatureField:
+        """Read nodal temperature on the plasma boundary from the ResultOutputSolver files.
+
+        ElmerSolver writes ``elmer_mesh/elmer_temperatures.NNNN.vtk`` (one file per time step,
+        points in the order of ``mesh.nodes``); only the plasma triangles are kept.
         """
-        if self.case_dir is None:
+        if self.case_dir is None or self.plasma_triangles is None:
             raise RuntimeError("ElmerFEM has not been run yet.")
-        temperature_file = list(self.case_dir.glob("elmer_temperatures*"))
 
-        if not temperature_file:
-            raise FileNotFoundError("No 'elmer_temperatures' file.")
+        output_dir = self.case_dir / "elmer_mesh"
+        files = sorted(
+            output_dir.glob("elmer_temperatures.*.vtk"), key=lambda p: int(p.suffixes[-2][1:])
+        )
+        if not files:
+            raise FileNotFoundError(f"No 'elmer_temperatures.*.vtk' files in {output_dir}")
 
-        # Extract temperature values from the file
-        with open(self.case_dir / "elmer_temperatures.vtk", "r") as f:
-            data = f.readline().split()
-            n_nodes = int(data[0])
-            f.readline()
-            nodes = np.zeros((n_nodes, 3))
-            for i in range(n_nodes):
-                nodes[i, :] = np.array([float(i) for i in f.readline().split()])
-        
-            data_cells = f.read().split("\n")
-            plasma_triangles = []
-            temperature_nodes = [] #np.zeros(n_nodes)
-            start_temp = False
-            for line in data_cells:
-                if line == "":
-                    continue
+        # Keep only the nodes of the plasma triangles and renumber them from 0
+        used_nodes = np.unique(self.plasma_triangles)
+        new_index = np.full(len(self.mesh["nodes"]), -1)
+        new_index[used_nodes] = np.arange(len(used_nodes))
+        mesh = SurfaceMesh(
+            nodes=self.mesh["nodes"][used_nodes], triangles=new_index[self.plasma_triangles]
+        )
 
-                if "htc1" in line:
-                    plasma_data = line.split()
-                    ind0 = int(plasma_data[-3])
-                    ind1 = int(plasma_data[-2])
-                    ind2 = int(plasma_data[-1])
-        
-                    triangle = [ind0, ind1, ind2]
-            
-                    plasma_triangles.append(triangle)
-        
-                if "#endgroup all" in line:
-                    plasma_triangles = np.array(plasma_triangles)
-        
-                if start_temp:
-                    temperature_nodes.append(float(line))
-        
-                if "#time" in line:
-                    start_temp = True
-        
-            #for line in enumerate(data_cells[-n_nodes:]):
-            #    temperature_nodes[line[0]] = float(line[1][:-2])
-        
-        plasma_nodes = []
-        for triangle in plasma_triangles:
-            for node_id in triangle:
-                if node_id not in plasma_nodes:
-                    plasma_nodes.append(node_id)
+        temperature = np.empty((len(files), len(used_nodes)))
+        for i, file in enumerate(files):
+            output = pv.read(file)
+            if output.n_points != len(self.mesh["nodes"]):
+                raise ValueError(
+                    f"{file} has {output.n_points} points, mesh has {len(self.mesh['nodes'])}"
+                )
+            temperature[i] = np.asarray(output.point_data["Temperature"])[used_nodes]
 
-        plasma_nodes = np.array(plasma_nodes)
-        temperature_nodes = np.array(temperature_nodes)
-        #from riptrace_py.io_utils import generate_faces_vtk
-        
-        #generate_faces_vtk("test.vtk", {"nodes", nodes, "cells":, triangles, ""})
+        if self.is_transient:
+            times = self.time_step * np.arange(1, len(files) + 1)  # written after each step
+        else:
+            times = np.zeros(len(files))
+        return TemperatureField(mesh=mesh, times=times, temperature=temperature)
 
-        # nodes: (N,3)
-        # plasma_triangles: (M,3) indices into nodes
-        # temperature_nodes: (N,)
-        
-        tri = plasma_triangles
-        
-        # If triangles are 1-based (common in mesh formats), convert to 0-based.
-        # Your sample includes 0, so it's *probably* already 0-based; keep this check.
-        if tri.min() == 1 and tri.max() == len(nodes):
-            tri = tri - 1
-        
-        # 1) Find used node indices
-        used = np.unique(tri.ravel())           # sorted unique indices actually referenced
-        
-        # 2) Build a mapping old_index -> new_index (compact 0..len(used)-1)
-        # Fast mapping array (works because indices are 0..N-1)
-        mapping = np.full(len(nodes), -1, dtype=np.int64)
-        mapping[used] = np.arange(used.size, dtype=np.int64)
-        
-        # 3) Remap triangles
-        tri_compact = mapping[tri]
-        
-        # Optional sanity check: ensure no -1 slipped in
-        if (tri_compact < 0).any():
-            raise ValueError("Some triangle indices referenced nodes outside 'nodes'.")
-        
-        # 4) Compact nodes + temperatures
-        nodes_compact = nodes[used]
-        temperature_compact = temperature_nodes[used]
-        
-        # (Optional) If you want triangles to be 1-based again for export:
-        # tri_compact_1based = tri_compact + 1
-        from riptrace_py.io_utils import generate_faces_vtk
-        generate_faces_vtk(str(self.case_dir / "plasma_surface_temperature.vtk"),
-                           {"nodes": nodes_compact,
-                                                 "cells": tri_compact,
-                                                 "T_nodes": temperature_compact})
-
-        times = np.array([self.end_time if self.is_transient else 0.0])
-        self.temperature = {"nodes": nodes_compact,
-                            "cells_2d": tri_compact,
-                            "times": times,
-                            "temperature": temperature_compact[np.newaxis, :]}
-
-    def get_temperature(self) -> dict[str, np.ndarray]:
-        """Plasma-facing surface temperature: nodes, cells_2d, times (Nt,), temperature (Nt, N)."""
-        if self.temperature is None:
-            self.read_temperature()
-        if self.temperature is None:
-            raise RuntimeError("No ElmerFEM temperature result.")
-        return self.temperature
+    def get_result(self) -> TemperatureField:
+        """Plasma-facing surface temperature: one row per written time step."""
+        if self.result is None:
+            raise RuntimeError("ElmerFEM has not been run yet.")
+        return self.result

@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import numpy as np
-
-if TYPE_CHECKING:
-    from irflow.backends.flt.gyrohit import BackendGyrohit
-    from irflow.backends.flt.riptrace import BackendRiptrace
+from irflow.backends.base import FieldLineTracingBackend
+from irflow.data import HeatFluxField
 
 
 class FieldLineTracing:
     """Field line tracing step. The backend code is chosen with ``backend_code``."""
 
     dir_name = "FieldLineTracing"
+    # The first step reads its own inputs from the config, never from a previous step.
+    has_own_input = True
 
     def __init__(
         self,
@@ -30,11 +29,11 @@ class FieldLineTracing:
         self.backend_code = backend_code
         self.config = config or {}
         self.resources = resources
-        self.result: dict[str, Any] | None = None
+        self.result: HeatFluxField | None = None
 
         self.backend = self.get_backend(backend_code)
 
-    def get_backend(self, backend_code: str) -> BackendRiptrace | BackendGyrohit:
+    def get_backend(self, backend_code: str) -> FieldLineTracingBackend:
         """Create the backend for ``backend_code`` from the step config."""
         # Backends are imported here so that only the chosen code has to be installed.
         if backend_code.lower() == "riptrace":
@@ -76,17 +75,14 @@ class FieldLineTracing:
             raise FileNotFoundError(f"Directory does not exist: {step_dir}")
 
         self.backend.run(step_dir)
-        self.result = {"heat_flux": self.backend.get_heat_flux()}
+        self.result = self.backend.get_result()
 
-    def set_irflow_pass_data(self, data: dict[str, Any]) -> None:
+    def set_irflow_pass_data(self, data: Any) -> None:
         """Field line tracing is the first step, so it takes no upstream data."""
         raise ValueError("FieldLineTracing is the first step and takes no upstream data.")
 
-    def get_irflow_pass_data(self) -> dict[str, np.ndarray]:
-        """Return heat flux at target cell centres: ``{"xyz": (M, 3), "heat_flux": (M,)}``."""
-        target = self.backend.get_target_mesh_irflow()
-        nodes = np.asarray(target["nodes"], dtype=float)
-        cells = np.asarray(target["cells_2d"]).astype(int)
-
-        cell_centers = nodes[cells].mean(axis=1)  # (M, 3 nodes, 3 coords) -> (M, 3)
-        return {"xyz": cell_centers, "heat_flux": self.backend.get_heat_flux()}
+    def get_irflow_pass_data(self) -> HeatFluxField:
+        """Heat flux on the target mesh, for the thermal model."""
+        if self.result is None:
+            raise RuntimeError("FieldLineTracing has no result yet: call run() first.")
+        return self.result
