@@ -22,7 +22,8 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
 1. **Field line tracing (FLT)** → heat flux on a triangular target mesh (per triangle).
    Backends: Riptrace (primary, in-house, Python lib `riptrace_py`), L2G, GYROHIT.
 2. **Thermal model (TM)** → temperature on the plasma-facing surface (per node).
-   Backends: OpenFOAM (primary, `foamMultiRun` multi-region solid), ElmerFEM, HeatFEM.
+   Backends: OpenFOAM (primary, `foamMultiRun` multi-region solid), ElmerFEM, HeatFEM, and
+   `simple1d` (fast estimate: independent 1D slab under every heat flux triangle).
 3. **Optical simulation** → 2D IR camera image. Ray tracing first (raysect primary, optika);
    a radiosity algorithm may be added later with the same inputs/outputs.
 
@@ -41,7 +42,8 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
   (`irflow.code_paths`), not in case configs. Lookup: explicit path → `$IRFLOW_CODE_PATHS` →
   `~/.config/irflow/code_paths.toml`. Template: `templates/code_paths.toml`.
 - **Old AI scaffold** is in `archive/irflow_scaffold/` — inspiration only, never import it.
-- Optical step class name proposal: `OpticalModel` (`steps/optical_model.py`) — not yet confirmed.
+- Optical step is `OpticalModel` (`steps/optical_model.py`); name proposed by Claude, not
+  objected to by the user.
 - **CEA mousetrap** is a melting test: very high surface temperatures (~9000 K) are expected.
   For now the goal is that cases run; the physical setup may be revisited later.
 
@@ -72,16 +74,24 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
 | `src/irflow/backends/flt/riptrace.py` | Riptrace in-process via `riptrace_py` (`riptrace_case`, `riptrace_mesh`, `io_reader`) |
 | `src/irflow/backends/flt/gyrohit.py` | reads precomputed GYROHIT heat flux from VTK |
 | `src/irflow/backends/tm/openfoam/` | `backend.py` (run, pre-solve overlap check, read time series), `case_builder.py` (fills dictionary templates), `templates.py` + `template_files/` (`@NAME@` placeholders) |
+| `src/irflow/backends/tm/simple1d.py` | 1D slab per FLT triangle; steady analytic, transient backward Euler (one LU for all slabs), optional graded grid `first_cell_size` |
+| `src/irflow/steps/optical_model.py` | `OpticalModel`; `input_data=` (TemperatureField or `temperature.pvd`) |
+| `src/irflow/backends/optical/raysect.py` | pinhole `RadianceCamera` (no cos fall-off), `TemperatureEmitter` material (barycentric T from raysect's `MeshIntersection`), one image per time |
+| `src/irflow/backends/optical/planck.py` | Planck spectral radiance (nm, W/(m² sr nm)), no raysect dependency |
 | `src/irflow/backends/tm/elmerfem.py` | sif parser/writer, UNV→Elmer mesh, per-triangle BCs, pyvista output reader |
 | `cases/` | study drivers; large data in `cases/*/data/` (git-ignored) |
 | `tests/` | pytest suite (no external codes needed) |
 | `external/io_utils` | git submodule (user's io_utils); irflow no longer imports it |
+| `external/raysect` | git submodule, raysect source at tag v0.8.1 (reference; irflow imports the installed raysect) |
 
 ### Data passed between steps (`irflow.data`)
 
 - FLT → TM: `HeatFluxField(mesh, heat_flux (M,) W/m²)` — saved as `FieldLineTracing/heat_flux.vtp`
 - TM → optical: `TemperatureField(mesh, times (Nt,), temperature (Nt, N) K)` — saved as
   `ThermalModel/temperature.pvd` (+ `temperature/temperature_NNNN.vtp`)
+- Optical output: `CameraImages(times, radiance (Nt, ny, nx) W/(m² sr), wavelength_range nm)`,
+  row 0 = image top — saved as `OpticalModel/images.pvd` (+ `images/image_NNNN.vti`, rows
+  flipped so ParaView shows them upright)
 - A step with user `input_data` has `has_own_input = True`; IRFlow then does not overwrite it.
 - Overlap check default tolerance: 0.5 × longest edge of either mesh; distance is measured from
   TM face centres to the FLT *surface* (resolution independent).
@@ -102,6 +112,15 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
   (e.g. `hPolynomial` as solid transport, `eIcoTabulated` as equation of state) and were never
   run; only constant properties are verified. Kept byte-identical on purpose (golden tests).
 - `elmerfem.py` still has >100-char lines, style issues and mypy errors (rework in Phase 4).
+- VTK temperature series writes the full mesh for every time: mousetrap simple1d, 201 times on
+  132k triangles = 241 MB and ~70% of the run time. Disk is nearly full; consider writing
+  fewer times or an HDF5 writer.
+- raysect backend: Python material (~300k rays/s on 12 cores; Cython would help at high
+  resolution); ideal pinhole only (no lens, detector response, filter, transmission); one
+  constant grey emissivity; no reflections (hook: `surface_material()`); only the TM surface
+  is in the scene, so nothing occludes it. Output is radiance, not counts or temperature.
+- `ruff check` without `--select` skips line length (E501); use
+  `ruff check --select E,F,W,I src tests cases`.
 
 ## Plan and status
 
@@ -114,7 +133,7 @@ Root `pyproject.toml`, src-layout package, drivers in `cases/`, code-paths confi
 (Riptrace import, OpenFOAM `get_temperature` with full time series, TM pass data, outputs no
 longer written to CWD, Elmer `bc_id` parsing for ids ≥ 10), 30 tests.
 
-**Phase 2 — Contracts** (items 1–5 done 2026-11-19, uncommitted)
+**Phase 2 — Contracts** ✅ (2026-11-19)
 1. ✅ `data.py`: `SurfaceMesh`, `HeatFluxField`, `TemperatureField` dataclasses replacing dicts.
 2. ✅ `IRFlow(save_formats=["vtk"])` + `irflow.io` (option (a) chosen by user).
 3. ✅ `ThermalModel(input_data=...)` so the thermal model can run alone.
@@ -129,9 +148,12 @@ Riptrace MAST-U benchmark with current `riptrace_py` (heat flux matches the earl
 tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, identical result).
 
 **Phase 3 — End-to-end with primary backends:** Riptrace → OpenFOAM → raysect
-1. `OpticalModel` step + raysect backend (camera geometry, emissivity, spectral band), one
-   image per TM time.
-2. One reference case producing IR images.
+1. ✅ `OpticalModel` step + raysect backend, one image per TM time (subagent, merged
+   2026-11-19). Checked: uniform plane within 0.2 % of ε × band Planck integral; linear T
+   field reproduced inside triangles (test fails if barycentric weights are permuted).
+2. ✅ `simple1d` thermal backend (subagent, merged 2026-11-19).
+3. Reference cases producing IR images: `cases/cea_mousetrap/gyrohit_simple1d_raysect.py`
+   (full chain, no external solver); Riptrace → OpenFOAM → raysect still to run.
 
 **Phase 4 — Breadth and robustness**
 1. ElmerFEM: single plasma BC + interpolation function instead of per-triangle BCs.
@@ -144,8 +166,11 @@ tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, iden
 ## Open questions (ask the user)
 
 - OpenFOAM model names for table/polynomial material properties (see known issues).
-
-- Optical inputs beyond the context file: emissivity / reflectivity per material, camera
-  spectral band, and whether the optical scene mesh (for reflections) differs from the TM
-  surface.
+- simple1d: keep `first_cell_size` optional (uniform default) or grade automatically from
+  sqrt(alpha dt)? Backward Euler is ~11% low on the first step, ~1.4% by step 10 — acceptable?
+  Nodes used by no triangle get NaN — keep, or drop them from the result mesh?
+- Optical: camera model (pinhole fov/look_at vs calibrated pixel vectors / OpenCV); output
+  units (radiance vs power per pixel vs apparent temperature); spectral response (flat band
+  vs filter/detector curve); emissivity per material / T- or λ-dependent; reflections and
+  whether the optical scene (first wall etc.) differs from the TM surface.
 - Where large meshes for `cases/` live long-term (outside repo, git-lfs, data server).

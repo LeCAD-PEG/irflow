@@ -8,9 +8,10 @@ from pathlib import Path
 
 import irflow.io
 from irflow.steps.field_line_tracing import FieldLineTracing
+from irflow.steps.optical_model import OpticalModel
 from irflow.steps.thermal_model import ThermalModel
 
-Step = FieldLineTracing | ThermalModel
+Step = FieldLineTracing | ThermalModel | OpticalModel
 
 
 class IRFlow:

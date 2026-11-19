@@ -10,13 +10,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from irflow.data import HeatFluxField, TemperatureField
+from irflow.data import CameraImages, HeatFluxField, TemperatureField
 from irflow.io import vtk
 
 SUPPORTED_FORMATS = ("vtk",)
 
 HEAT_FLUX_SUFFIXES = {".vtk": vtk, ".vtp": vtk, ".vtu": vtk}
 TEMPERATURE_SUFFIXES = {".pvd": vtk}
+IMAGES_SUFFIXES = {".pvd": vtk}
 
 
 def check_formats(formats: Sequence[str]) -> tuple[str, ...]:
@@ -31,16 +32,23 @@ def check_formats(formats: Sequence[str]) -> tuple[str, ...]:
 
 
 def save(
-    field: HeatFluxField | TemperatureField, directory: str | Path, formats: Sequence[str]
+    field: HeatFluxField | TemperatureField | CameraImages,
+    directory: str | Path,
+    formats: Sequence[str],
 ) -> list[Path]:
     """Save a step result into ``directory`` in each of ``formats``; return the written files."""
+    if not isinstance(field, (HeatFluxField, TemperatureField, CameraImages)):
+        raise TypeError(f"Cannot save a {type(field).__name__}")
+
     paths = []
     for fmt in check_formats(formats):
         if fmt == "vtk":
             if isinstance(field, HeatFluxField):
                 paths.append(vtk.save_heat_flux(field, Path(directory)))
-            else:
+            elif isinstance(field, TemperatureField):
                 paths.append(vtk.save_temperature(field, Path(directory)))
+            else:
+                paths.append(vtk.save_images(field, Path(directory)))
     return paths
 
 
@@ -62,3 +70,11 @@ def load_temperature(path: str | Path) -> TemperatureField:
             f"Unknown temperature file type {path}; supported: {list(TEMPERATURE_SUFFIXES)}"
         )
     return module.load_temperature(path)
+
+
+def load_images(path: str | Path) -> CameraImages:
+    """Load camera images; the format follows from the file suffix."""
+    module = IMAGES_SUFFIXES.get(Path(path).suffix.lower())
+    if module is None:
+        raise ValueError(f"Unknown image file type {path}; supported: {list(IMAGES_SUFFIXES)}")
+    return module.load_images(path)

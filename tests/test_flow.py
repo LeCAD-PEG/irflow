@@ -119,8 +119,8 @@ def test_importing_irflow_does_not_import_backends() -> None:
     # Fresh interpreter, because other tests import backends into this one
     code = (
         "import sys, irflow; "
-        "print(any(name.startswith('irflow.backends.flt.') "
-        "or name.startswith('irflow.backends.tm.') for name in sys.modules))"
+        "print(any(name.startswith(('irflow.backends.flt.', 'irflow.backends.tm.', "
+        "'irflow.backends.optical.', 'raysect')) for name in sys.modules))"
     )
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
     result = subprocess.run(

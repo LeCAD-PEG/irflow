@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from irflow.data import HeatFluxField, TemperatureField
+from irflow.data import CameraImages, HeatFluxField, TemperatureField
 
 
 class FieldLineTracingBackend(ABC):
@@ -36,3 +36,15 @@ class ThermalModelBackend(ABC):
     @abstractmethod
     def get_result(self) -> TemperatureField:
         """Plasma-facing surface temperature after :meth:`run`."""
+
+
+class OpticalModelBackend(ABC):
+    """An optical code: computes synthetic IR camera images from the surface temperature."""
+
+    @abstractmethod
+    def run(self, step_dir: Path, temperature: TemperatureField) -> None:
+        """Compute one camera image per time of ``temperature``; all files go into ``step_dir``."""
+
+    @abstractmethod
+    def get_result(self) -> CameraImages:
+        """Camera images after :meth:`run`."""

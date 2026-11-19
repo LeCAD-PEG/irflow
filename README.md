@@ -18,16 +18,18 @@ into a code-paths file: copy `templates/code_paths.toml` to `~/.config/irflow/co
 ## Use
 
 ```python
-from irflow import IRFlow, FieldLineTracing, ThermalModel
+from irflow import IRFlow, FieldLineTracing, OpticalModel, ThermalModel
 
 flt = FieldLineTracing(backend_code="riptrace", config={...})
-tm = ThermalModel(backend_code="openfoam", config={...})
-IRFlow(case_name="my_case", root_dir="~/irflow_studies", steps=[flt, tm]).run()
+tm = ThermalModel(backend_code="openfoam", config={...})  # or "elmerfem", "simple1d"
+camera = OpticalModel(backend_code="raysect", config={...})
+IRFlow(case_name="my_case", root_dir="~/irflow_studies", steps=[flt, tm, camera]).run()
 ```
 
 Each step runs in `<root_dir>/<case_name>/<StepName>/` and saves its result there
-(`save_formats=["vtk"]` by default): `FieldLineTracing/heat_flux.vtp` and
-`ThermalModel/temperature.pvd` (a time series that opens directly in ParaView).
+(`save_formats=["vtk"]` by default): `FieldLineTracing/heat_flux.vtp`,
+`ThermalModel/temperature.pvd` and `OpticalModel/images.pvd` (one IR image per thermal time
+step). The `.pvd` files open directly in ParaView as time series.
 
 A step can also run on its own with data you provide:
 
@@ -61,5 +63,6 @@ pytest
 - `cases/` — study drivers (large input data in `cases/*/data/` is not tracked by git)
 - `templates/` — configuration templates
 - `tests/` — pytest tests
-- `external/` — external code repositories (git submodules)
+- `external/` — external code repositories (git submodules: `git submodule update --init
+  --depth 1`), see `external/README.md`
 - `archive/` — old code kept for reference only

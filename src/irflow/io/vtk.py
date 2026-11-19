@@ -3,6 +3,8 @@
 - Heat flux: one ``.vtp`` file with cell array ``heat_flux``.
 - Temperature: a ``.pvd`` collection (opens as a time series in ParaView) pointing to one
   ``.vtp`` file per time, each with point array ``temperature``.
+- Camera images: a ``.pvd`` collection pointing to one ``.vti`` image per time, each with
+  cell array ``radiance`` (one cell per pixel) and field array ``wavelength_range``.
 """
 
 from __future__ import annotations
@@ -14,10 +16,11 @@ from typing import Any
 import numpy as np
 import pyvista as pv
 
-from irflow.data import HeatFluxField, SurfaceMesh, TemperatureField
+from irflow.data import CameraImages, HeatFluxField, SurfaceMesh, TemperatureField
 
 HEAT_FLUX_FILE = "heat_flux.vtp"
 TEMPERATURE_FILE = "temperature.pvd"
+IMAGES_FILE = "images.pvd"
 
 
 def read_triangle_mesh(path: str | Path) -> tuple[SurfaceMesh, dict[str, Any], dict[str, Any]]:
@@ -40,6 +43,29 @@ def read_triangle_mesh(path: str | Path) -> tuple[SurfaceMesh, dict[str, Any], d
     cell_data = {name: np.asarray(data.cell_data[name]) for name in data.cell_data}
     point_data = {name: np.asarray(data.point_data[name]) for name in data.point_data}
     return mesh, cell_data, point_data
+
+
+def write_collection(path: Path, times: np.ndarray, files: list[str]) -> None:
+    """Write a ``.pvd`` collection: ``files`` (relative to ``path``) at ``times``."""
+    collection = ET.Element("Collection")
+    for time, file in zip(times, files):
+        ET.SubElement(collection, "DataSet", timestep=repr(float(time)), file=file)
+
+    root = ET.Element("VTKFile", type="Collection", version="0.1")
+    root.append(collection)
+    ET.ElementTree(root).write(path, xml_declaration=True)
+
+
+def read_collection(path: str | Path) -> tuple[np.ndarray, list[Path]]:
+    """Read a ``.pvd`` collection; return its times and the paths of its files."""
+    path = Path(path)
+    datasets = ET.parse(path).getroot().findall("./Collection/DataSet")
+    if not datasets:
+        raise ValueError(f"No datasets in {path}")
+
+    times = np.array([float(dataset.get("timestep", 0.0)) for dataset in datasets])
+    files = [path.parent / dataset.get("file", "") for dataset in datasets]
+    return times, files
 
 
 def to_polydata(mesh: SurfaceMesh) -> pv.PolyData:
@@ -75,34 +101,63 @@ def save_temperature(field: TemperatureField, directory: Path) -> Path:
     series_dir = directory / "temperature"
     series_dir.mkdir(parents=True, exist_ok=True)
 
-    collection = ET.Element("Collection")
-    for index, time in enumerate(field.times):
+    files = []
+    for index in range(len(field.times)):
         polydata = to_polydata(field.mesh)
         polydata.point_data["temperature"] = field.temperature[index]
         file_name = f"temperature_{index:04d}.vtp"
         polydata.save(series_dir / file_name)
-        ET.SubElement(
-            collection, "DataSet", timestep=repr(float(time)), file=f"temperature/{file_name}"
-        )
+        files.append(f"temperature/{file_name}")
 
-    root = ET.Element("VTKFile", type="Collection", version="0.1")
-    root.append(collection)
     path = directory / TEMPERATURE_FILE
-    ET.ElementTree(root).write(path, xml_declaration=True)
+    write_collection(path, field.times, files)
     return path
 
 
 def load_temperature(path: str | Path) -> TemperatureField:
     """Read a temperature time series from a ``.pvd`` collection written by irflow."""
-    path = Path(path)
-    datasets = ET.parse(path).getroot().findall("./Collection/DataSet")
-    if not datasets:
-        raise ValueError(f"No datasets in {path}")
-
-    times = np.array([float(dataset.get("timestep", 0.0)) for dataset in datasets])
-    files = [path.parent / dataset.get("file", "") for dataset in datasets]
-
+    times, files = read_collection(path)
     mesh, _, _ = read_triangle_mesh(files[0])
     temperature = [read_triangle_mesh(file)[2]["temperature"] for file in files]
 
     return TemperatureField(mesh=mesh, times=times, temperature=np.array(temperature))
+
+
+def save_images(images: CameraImages, directory: Path) -> Path:
+    """Write ``<directory>/images.pvd`` and an ``images/image_NNNN.vti`` per time.
+
+    Each pixel is one cell of the ``.vti`` image. VTK images start at the bottom row, so the
+    rows are flipped on writing; ParaView then shows the image the right way up.
+    """
+    directory = Path(directory)
+    series_dir = directory / "images"
+    series_dir.mkdir(parents=True, exist_ok=True)
+
+    n_rows, n_columns = images.radiance.shape[1:]
+    files = []
+    for index in range(len(images.times)):
+        grid = pv.ImageData(dimensions=(n_columns + 1, n_rows + 1, 1))
+        grid.cell_data["radiance"] = images.radiance[index, ::-1, :].ravel()
+        grid.field_data["wavelength_range"] = np.array(images.wavelength_range)
+        file_name = f"image_{index:04d}.vti"
+        grid.save(series_dir / file_name)
+        files.append(f"images/{file_name}")
+
+    path = directory / IMAGES_FILE
+    write_collection(path, images.times, files)
+    return path
+
+
+def load_images(path: str | Path) -> CameraImages:
+    """Read camera images from a ``.pvd`` collection written by irflow."""
+    times, files = read_collection(path)
+    grids = [pv.read(file) for file in files]
+
+    radiance = []
+    for grid in grids:
+        n_columns, n_rows = grid.dimensions[0] - 1, grid.dimensions[1] - 1
+        image = np.asarray(grid.cell_data["radiance"]).reshape(n_rows, n_columns)
+        radiance.append(image[::-1, :])
+
+    wavelength_range = tuple(grids[0].field_data["wavelength_range"])
+    return CameraImages(times=times, radiance=np.array(radiance), wavelength_range=wavelength_range)

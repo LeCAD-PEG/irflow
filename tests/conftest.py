@@ -9,7 +9,7 @@ import pytest
 import pyvista as pv
 
 import irflow.code_paths
-from irflow.data import HeatFluxField, SurfaceMesh, TemperatureField
+from irflow.data import CameraImages, HeatFluxField, SurfaceMesh, TemperatureField
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +46,15 @@ def heat_flux_field(square_mesh: SurfaceMesh) -> HeatFluxField:
 def temperature_field(square_mesh: SurfaceMesh) -> TemperatureField:
     temperature = np.array([[300.0, 300.0, 300.0, 300.0], [310.0, 320.0, 330.0, 340.0]])
     return TemperatureField(mesh=square_mesh, times=np.array([0.0, 0.5]), temperature=temperature)
+
+
+@pytest.fixture
+def camera_images() -> CameraImages:
+    """Two images of 3 rows x 4 columns, every pixel with a different value."""
+    radiance = np.arange(24.0).reshape(2, 3, 4)
+    return CameraImages(
+        times=np.array([0.0, 0.5]), radiance=radiance, wavelength_range=(3000.0, 5000.0)
+    )
 
 
 @pytest.fixture

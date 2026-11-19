@@ -1,6 +1,7 @@
 """Data passed between simulation steps.
 
-All quantities are in SI units: lengths in m, time in s, temperature in K, heat flux in W/m^2.
+All quantities are in SI units: lengths in m, time in s, temperature in K, heat flux in W/m^2,
+radiance in W/(m^2 sr). The exception is wavelength, which is in nm as is usual in optics.
 """
 
 from __future__ import annotations
@@ -88,3 +89,38 @@ class TemperatureField:
                 f"temperature must have shape {expected} (times, nodes), "
                 f"got {self.temperature.shape}"
             )
+
+
+@dataclass
+class CameraImages:
+    """Synthetic IR camera images: output of the optical model.
+
+    There is one image per time of the temperature field; a steady-state result has a single
+    image. Each pixel holds the radiance reaching the camera, integrated over the wavelength
+    band ``wavelength_range``. Image row 0 is the top of the camera view and column 0 its
+    left side, as in an image viewer.
+    """
+
+    times: np.ndarray  # (Nt,) [s]
+    radiance: np.ndarray  # (Nt, ny, nx) [W/(m^2 sr)]
+    wavelength_range: tuple[float, float]  # (min, max) [nm]
+
+    def __post_init__(self) -> None:
+        self.times = np.atleast_1d(np.asarray(self.times, dtype=float))
+        self.radiance = np.asarray(self.radiance, dtype=float)
+
+        if self.times.ndim != 1:
+            raise ValueError(f"times must be one-dimensional, got shape {self.times.shape}")
+        if self.radiance.ndim != 3 or self.radiance.shape[0] != len(self.times):
+            raise ValueError(
+                f"radiance must have shape ({len(self.times)}, ny, nx) (times, rows, columns), "
+                f"got {self.radiance.shape}"
+            )
+
+        wavelength_range = np.asarray(self.wavelength_range, dtype=float)
+        if wavelength_range.shape != (2,) or not 0.0 < wavelength_range[0] < wavelength_range[1]:
+            raise ValueError(
+                f"wavelength_range must be (min, max) with 0 < min < max [nm], "
+                f"got {self.wavelength_range}"
+            )
+        self.wavelength_range = (float(wavelength_range[0]), float(wavelength_range[1]))
