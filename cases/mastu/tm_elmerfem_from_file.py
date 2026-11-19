@@ -10,7 +10,7 @@ from irflow.io import load_heat_flux
 
 CASE_DIR = Path(__file__).resolve().parent
 RIPTRACE_TARGET = (
-    "/home/brankm/work/irflow_studies/test_workflow_flt_only/"
+    "/home/brankm/data/irflow_studies/test_workflow_flt_only/"
     "FieldLineTracing/riptrace_case/smardda_caseirflow_target.vtk"
 )
 
@@ -32,7 +32,7 @@ tm_case = ThermalModel(
 
 irflow_case = IRFlow(
     case_name="test_workflow_tm_only",
-    root_dir="/home/brankm/work/irflow_studies/",
+    root_dir="/home/brankm/data/irflow_studies/",
     steps=[tm_case],
     overwrite=True,
 )

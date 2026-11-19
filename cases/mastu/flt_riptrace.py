@@ -26,7 +26,7 @@ flt_case = FieldLineTracing(
 
 irflow_case = IRFlow(
     case_name="test_workflow_flt_only",
-    root_dir="/home/brankm/work/irflow_studies/",
+    root_dir="/home/brankm/data/irflow_studies/",
     steps=[flt_case],
     overwrite=True,
 )

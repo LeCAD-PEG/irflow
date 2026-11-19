@@ -39,7 +39,7 @@ tm_case = ThermalModel("mastu_elmerfem", enabled=True, backend_code="elmerfem", 
 
 irflow_case = IRFlow(
     case_name="test_workflow_flt_and_tm",
-    root_dir="/home/brankm/work/irflow_studies/",
+    root_dir="/home/brankm/data/irflow_studies/",
     steps=[flt_case, tm_case],
     overwrite=True,
 )

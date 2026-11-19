@@ -33,10 +33,9 @@ config_tm = {
     "back_boundary": {"type": "temperature", "value": 373.0},
     "initial_temperature": 373.0,
     "time_stepping": {"type": "transient", "time_step": 0.001, "end_time": 0.2},
-    # In 0.2 s the heat penetrates only ~1 mm of the 10 mm slab: a fine cell at the heated
-    # surface that grows towards the back resolves this with few points
+    # Grid points through the slab; the cell at the heated surface is chosen from the
+    # time step automatically (override with "first_cell_size" [m])
     "n_points": 51,
-    "first_cell_size": 5e-6,
 }
 
 tm_case = ThermalModel(
@@ -45,7 +44,7 @@ tm_case = ThermalModel(
 
 irflow_case = IRFlow(
     case_name="CEA_mousetrap_simple1d",
-    root_dir="/home/brankm/work/irflow_studies/",
+    root_dir="/home/brankm/data/irflow_studies/",
     steps=[flt_case, tm_case],
     overwrite=True,
 )
