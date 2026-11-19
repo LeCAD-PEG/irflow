@@ -1,12 +1,26 @@
-import numpy as np
-import os
-import re
-from scipy.interpolate import NearestNDInterpolator
-from pathlib import Path
-import subprocess
-import pdb
+"""Thermal model backend for ElmerFEM (sif template + Elmer mesh, run with ElmerSolver)."""
 
-def get_boundary_conditions(sif_data):
+from __future__ import annotations
+
+import copy
+import os
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from scipy.interpolate import NearestNDInterpolator
+
+from irflow.code_paths import get_code_path
+
+
+def elmer_executable(name: str) -> str:
+    """Return ElmerGrid/ElmerSolver from ``[elmerfem] bin_dir`` in code paths, else PATH."""
+    bin_dir = get_code_path("elmerfem", "bin_dir")
+    return str(Path(bin_dir) / name) if bin_dir else name
+
+
+def get_boundary_conditions(sif_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     boundary_conditions = {}
     for key in sif_data.keys():
         if "Boundary Condition" in key:
@@ -51,17 +65,12 @@ def get_boundary_conditions(sif_data):
 
             bc["value_type"] = "const"
             boundary_conditions[irflow_key] = bc
-            __import__("pdb").set_trace()
-
 
     return boundary_conditions
 
-def get_material_properties(sif_data):
-
+def get_material_properties(sif_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     sif_materials = {}
     sif_bodies = {}
-
-    __import__("pdb").set_trace()
 
     for key in sif_data.keys():
         if "Body" in key:
@@ -133,8 +142,6 @@ def get_material_properties(sif_data):
                                   "Heat Capacity": __capacity,
                                   "Heat Conductivity": __conductivity}
 
-    __import__("pdb").set_trace()
-
     # Merge data from sif_bodies and sif_materials into one dict
     material_properties = {}
     for key in sif_bodies:
@@ -166,7 +173,7 @@ def get_material_properties(sif_data):
 
     return material_properties
 
-def is_new_block(line):
+def is_new_block(line: str) -> bool:
     """return True if we are at start of block"""
     if line[:6].lower() == "header" or  \
        line[:10].lower() == "simulation" or  \
@@ -182,12 +189,17 @@ def is_new_block(line):
 
 
 # Connector between IR workflow - thermal model and Elmer
-class BackendElmerFEM(object):
-    """Documentation for BackendElmerFEM
+class BackendElmerFEM:
+    """Connector between the irflow thermal model step and ElmerFEM."""
 
-    """
-    def __init__(self, mesh_file, mesh_type, sif_file, plasma_bc_id, root_dir, time_stepping):
-        super(BackendElmerFEM, self).__init__()
+    def __init__(
+        self,
+        mesh_file: str,
+        mesh_type: str,
+        sif_file: str,
+        plasma_bc_id: int,
+        time_stepping: dict[str, Any],
+    ) -> None:
         self.mesh_file = mesh_file
         self.sif_file = sif_file
         self.mesh_type = mesh_type
@@ -197,7 +209,7 @@ class BackendElmerFEM(object):
                                              # back to 1-based when
                                              # writing mesh and sif
                                              # file
-        self.root_dir = root_dir
+        self.case_dir: Path | None = None
 
         self.elmer_mesh_nodes = None # os.path.join(self.mesh_file, "mesh.nodes")
         self.elmer_mesh_elements = None # os.path.join(self.mesh_file, "mesh.elements")
@@ -213,15 +225,16 @@ class BackendElmerFEM(object):
             self.time_step = None
             self.end_time = None
 
-        self.sif_data = self.read_sif(sif_file)
-        self.get_elmer_mesh(mesh_type, mesh_file, self.root_dir)
-        self.mesh = self.get_tm_mesh()
-        pdb.set_trace()
-        self.material_properties = get_material_properties(self.sif_data)
-        self.boundary_conditions = get_boundary_conditions(self.sif_data)
-        #self.get_elmer_mesh(mesh_type, mesh_file, dir_path=None)
+        # Filled in run(): sif and mesh are read and converted in the step directory
+        self.sif_data: dict[str, Any] = {}
+        self.mesh: dict[str, Any] = {}
+        self.material_properties: dict[str, Any] = {}
+        self.boundary_conditions: dict[str, Any] = {}
+        self.temperature: dict[str, np.ndarray] | None = None
 
-    def get_elmer_mesh(self, mesh_type, mesh_file, dir_path=None):
+    def get_elmer_mesh(
+        self, mesh_type: str, mesh_file: str | Path, dir_path: str | Path | None = None
+    ) -> None:
         mesh_file = Path(mesh_file)
 
         if not dir_path:
@@ -245,10 +258,8 @@ class BackendElmerFEM(object):
             
             print("Running ElmerGrid to convert UNV → Elmer mesh ...")
             print("Directory for Elmer mesh:", elmer_mesh_dir)
-            __import__("pdb").set_trace()
-
             result = subprocess.run(
-                ["ElmerGrid", "8", "2", str(mesh_file), "-out", str(elmer_mesh_dir), "-autoclean"],
+                [elmer_executable("ElmerGrid"), "8", "2", str(mesh_file), "-out", str(elmer_mesh_dir), "-autoclean"],
                 capture_output=True,
                 text=True
             )
@@ -261,7 +272,6 @@ class BackendElmerFEM(object):
     
             # 2) Preberi generirane Elmer mesh datoteke
             #elmer_mesh_dir = dir_path / "elmer_mesh"
-            __import__("pdb").set_trace()
             print("Directory for Elmer mesh:", elmer_mesh_dir)
             self.elmer_mesh_nodes = np.loadtxt(elmer_mesh_dir / "mesh.nodes").astype(float)
             self.elmer_mesh_nodes[:, 0] -= 1
@@ -274,7 +284,7 @@ class BackendElmerFEM(object):
             "supported.")
 
 
-    def get_tm_mesh(self):
+    def get_tm_mesh(self) -> dict[str, Any]:
         #if self.mesh_type.lower() == "mesh":
         nodes = self.elmer_mesh_nodes[:, -3:]
 
@@ -314,7 +324,7 @@ class BackendElmerFEM(object):
 
         return self.mesh
 
-    def read_sif(self, filename=None):
+    def read_sif(self, filename: str | Path | None = None) -> dict[str, Any]:
         if not filename:
             filename = self.sif_file
 
@@ -399,11 +409,8 @@ class BackendElmerFEM(object):
 
         return sif_data
 
-    def map_plasma_heat_flux(self, irflow_pass_data):
-        print("Mapping plasma heat flux to Elmer mesh ...", irflow_pass_data)
-        # get number of all triangles that face plasma
-        pdb.set_trace()
-        plasma_IDs = self.mesh["groups_2d"]["group_2d_id_"+str(self.plasma_bc_id)]
+    def map_plasma_heat_flux(self, irflow_pass_data: dict[str, np.ndarray]) -> None:
+        print("Mapping plasma heat flux to Elmer mesh ...")
 
         ##########################################################################
         # Prepare IDs for target groups, each plasma triangle will get its own ID
@@ -432,7 +439,7 @@ class BackendElmerFEM(object):
         bc_ID_plasma = None
         bc_IDs_other = []
         for bc_key in self.boundary_conditions.keys():
-            bc_ID = int(bc_key.strip("_")[-1])
+            bc_ID = int(bc_key.split("_")[-1])
             #print("BC ID:", bc_ID, "key", bc_key)
             #print(int(self.boundary_conditions[bc_key]["group_2d_id"]), "plasma BC ID", self.plasma_bc_id)
             # skip plasma BC, will be replaced by value to each triangle
@@ -448,7 +455,6 @@ class BackendElmerFEM(object):
         cell_centers = cell_nodes.mean(axis=1) # shape (Ncells, 3)
         
         # Prepare interpolation function and map to each triangle
-        print(irflow_pass_data)
 
         xyz_flt = irflow_pass_data["xyz"]
         heat_flux_flt = irflow_pass_data["heat_flux"]
@@ -458,11 +464,10 @@ class BackendElmerFEM(object):
         heat_flux = interp(cell_centers)
 
         from riptrace_py.io_utils import generate_faces_vtk
-        generate_faces_vtk("plasma_faces.vtk",
+        generate_faces_vtk(str(self.case_dir / "plasma_faces.vtk"),
                            {"nodes": self.mesh["nodes"],
                             "cells": plasma_cells,
                             "heat_flux": heat_flux})
-        pdb.set_trace()
         bc_ID_plasma_counter = bc_ID_plasma
         target_boundary_plasma_counter = self.plasma_bc_id
 
@@ -486,10 +491,8 @@ class BackendElmerFEM(object):
         plasma_cells_IDs_skip_first = plasma_cells_IDs[1:]
 
         # Update boundary.mesh with new plasma boundary group IDs
-        import copy
         
         target_boundary_plasma_counter_bm = copy.deepcopy(target_boundary_plasma_counter)
-        pdb.set_trace()
         #    self.elmer_mesh_boundary[plasma_cell_ID, 1] = target_boundary_plasma_counter_bm
         #    target_boundary_plasma_counter_bm += 1
     
@@ -521,24 +524,17 @@ class BackendElmerFEM(object):
             target_boundary_plasma_counter += 1
 
 
-    def get_irflow_pass_data(self, irflow_pass_data):
+    def set_irflow_pass_data(self, irflow_pass_data: dict[str, np.ndarray]) -> None:
+        """Heat flux from the previous step: ``{"xyz": (M, 3), "heat_flux": (M,)}``."""
         self.irflow_pass_data = irflow_pass_data
-        #return self.irflow_pass_data
         
 
-    #def get_irflow_data(self, ):
-    #    data = {"mesh": self.mesh,
-    #            "boundary_conditions": self.boundary_conditions,
-    #            "material_properties": self.material_properties}
-    #    
-    #    return data
 
-    def write_sif(self, dir_path):
+    def write_sif(self, dir_path: str | Path) -> None:
         file_to_write = Path(dir_path, "case.sif")
         header_block = self.sif_data["Header"]
         simulation_block = self.sif_data["Simulation"]
         constants_block = self.sif_data["Constants"]
-        equation_block = self.sif_data["Equation 1"]
 
         solver_blocks = {}
         for sl in self.sif_data.keys():
@@ -561,7 +557,6 @@ class BackendElmerFEM(object):
                 body_blocks[bd] = self.sif_data[bd]
 
         elmer_mesh_dir = Path(dir_path) / Path("elmer_mesh")
-        __import__("pdb").set_trace()
 
         with open(file_to_write, 'w') as f:
             f.write("Header\n")
@@ -592,14 +587,10 @@ class BackendElmerFEM(object):
 
             f.write("End\n")
             f.write("\n")
-            print("Solver blocks:", solver_blocks)
             for sl in solver_blocks.keys():
                 f.write("\n")
                 f.write(str(sl)+"\n")
-                print(sl, solver_blocks[sl])
                 for key in solver_blocks[sl]:
-                    print(key)
-                    print(key, solver_blocks[sl][key])
                     f.write("  "+key+" = "+solver_blocks[sl][key]+"\n")
 
                 f.write("End\n")
@@ -691,7 +682,7 @@ class BackendElmerFEM(object):
                 f.write("End\n")
 
 
-    def write_elmer_mesh(self, dir_path):
+    def write_elmer_mesh(self, dir_path: str | Path) -> None:
         dir_path = Path(dir_path) / Path("elmer_mesh")
         # In "mesh.nodes" file, node numbering starts from 1, so add 1
         # to all node IDs. Frst and second columns are of type 'int'
@@ -710,26 +701,27 @@ class BackendElmerFEM(object):
         np.savetxt(os.path.join(dir_path, "mesh.elements"), self.elmer_mesh_elements+1, fmt="%d")
         np.savetxt(os.path.join(dir_path, "mesh.boundary"), self.elmer_mesh_boundary+1, fmt="%d")
 
-    #def set_irflow_pass_data(self, data_to_pass):
-    #    self.irflow_pass_data = data_to_pass
-    
-    def run(self, dir_path):
+    def run(self, dir_path: str | Path) -> None:
+        """Read sif and mesh, map plasma heat flux to BCs, write the case and run ElmerSolver."""
+        if self.irflow_pass_data is None:
+            raise RuntimeError(
+                "ElmerFEM backend has no heat flux input: run a field line tracing step "
+                "before the thermal model."
+            )
+        self.case_dir = Path(dir_path)
         self.sif_data = self.read_sif(self.sif_file)
-        self.get_elmer_mesh(self.mesh_type, self.mesh_file, self.root_dir)
+        self.get_elmer_mesh(self.mesh_type, self.mesh_file, self.case_dir)
         self.mesh = self.get_tm_mesh()
         self.material_properties = get_material_properties(self.sif_data)
         self.boundary_conditions = get_boundary_conditions(self.sif_data)
-        
-        #self.get_elmer_mesh(self.mesh_type, self.mesh_file, self.root_dir)
+
         self.map_plasma_heat_flux(self.irflow_pass_data)
         self.write_sif(dir_path)
 
         self.write_elmer_mesh(dir_path)
 
-        
-        __import__("pdb").set_trace()
         print("Running ElmerSolver ...")
-        result = subprocess.run( ["ElmerSolver", "case.sif"],
+        result = subprocess.run( [elmer_executable("ElmerSolver"), "case.sif"],
                                  cwd=dir_path,
                                  capture_output=True,
                                  text=True)
@@ -739,16 +731,21 @@ class BackendElmerFEM(object):
         if result.returncode != 0:
             raise RuntimeError("ElmerSolver failed with return code {}".format(result.returncode))
 
-    def get_temperature(self, ):
-        temperature_file = list(Path(".").glob("elmer_temperatures*"))
+    def read_temperature(self) -> None:
+        """Read nodal temperature on the plasma boundary from the solver output.
+
+        TODO(Phase 4): unverified; the plasma group name "htc1" is hardcoded and only one
+        time is read.
+        """
+        if self.case_dir is None:
+            raise RuntimeError("ElmerFEM has not been run yet.")
+        temperature_file = list(self.case_dir.glob("elmer_temperatures*"))
 
         if not temperature_file:
             raise FileNotFoundError("No 'elmer_temperatures' file.")
 
-        filepath = temperature_file[0]
-
         # Extract temperature values from the file
-        with open("elmer_temperatures.vtk", "r") as f:
+        with open(self.case_dir / "elmer_temperatures.vtk", "r") as f:
             data = f.readline().split()
             n_nodes = int(data[0])
             f.readline()
@@ -831,15 +828,21 @@ class BackendElmerFEM(object):
         # (Optional) If you want triangles to be 1-based again for export:
         # tri_compact_1based = tri_compact + 1
         from riptrace_py.io_utils import generate_faces_vtk
-        generate_faces_vtk("test_elmerfem.vtk", {"nodes": nodes_compact,
+        generate_faces_vtk(str(self.case_dir / "plasma_surface_temperature.vtk"),
+                           {"nodes": nodes_compact,
                                                  "cells": tri_compact,
                                                  "T_nodes": temperature_compact})
 
+        times = np.array([self.end_time if self.is_transient else 0.0])
+        self.temperature = {"nodes": nodes_compact,
+                            "cells_2d": tri_compact,
+                            "times": times,
+                            "temperature": temperature_compact[np.newaxis, :]}
 
-        #full_fingers_plasma = {"nodes": nodes_compact, "cells": tri_compact, "T_nodes":temperature_compact}
-
-        #out_vtk = os.path.join(results_dir, f"{fingerName}.vtk")
-        #if os.path.isfile(vtkfilename):
-        #    shutil.copy2(vtkfilename, out_vtk)
-        #else:
-        #    print(f"WARNING: {vtkfilename} not found in {finger_dir} (solver may not have produced
+    def get_temperature(self) -> dict[str, np.ndarray]:
+        """Plasma-facing surface temperature: nodes, cells_2d, times (Nt,), temperature (Nt, N)."""
+        if self.temperature is None:
+            self.read_temperature()
+        if self.temperature is None:
+            raise RuntimeError("No ElmerFEM temperature result.")
+        return self.temperature

@@ -1,0 +1,262 @@
+        // This is a coded boundary condition that can act as both fixedValue and fixedGradient
+        type            codedMixed;
+
+        // Default values (will be overridden in code)
+        refValue        uniform @INITIAL_TEMPERATURE@;
+        refGradient     uniform 0;
+        valueFraction   uniform 0;
+
+        // Name of this coded BC
+        name            timeDependentHeatFlux;
+
+        // Extra headers needed in C++
+        codeInclude
+        #{
+            #include <fstream>    // For reading from file
+            #include <sstream>    // For parsing strings
+            #include <vector>     // For dynamic arrays
+            #include <algorithm>  // For sorting
+        #};
+
+        // Main custom code
+        code
+        #{
+            //------------------------------------------------------------------
+            // 1. Shortcuts to patch geometry and BC data storage
+            //------------------------------------------------------------------
+            const vectorField& cf = patch().Cf();          // Face centres of the patch
+            scalarField&       refGrad = this->refGrad();  // Where we store the applied gradient
+            scalarField&       valFrac = this->valueFraction(); // 0 → gradient BC, 1 → fixedValue BC
+
+            //------------------------------------------------------------------
+            // 2. Read heat flux data file (constant/data.txt)
+            //------------------------------------------------------------------
+            std::ifstream file("constant/data.txt");
+            if (!file.good())
+            {
+                FatalErrorInFunction << "Cannot open flux file constant/data.txt" << exit(FatalError);
+            }
+
+            //------------------------------------------------------------------
+            // 3. Read first line: time header
+            //------------------------------------------------------------------
+            // Example:
+            // time: 0.0 0.1 0.2 ... 
+            std::string header;
+            std::getline(file, header);
+            std::istringstream headerStream(header);
+            std::string dummy;
+            headerStream >> dummy; // should read "time:"
+            std::vector<scalar> times;
+            scalar tVal;
+            while (headerStream >> tVal) { times.push_back(tVal); }
+
+            //------------------------------------------------------------------
+            // 4. Read points and time series of q-values
+            //------------------------------------------------------------------
+            // Each line after header:
+            // x y z q_t0 q_t1 q_t2 ... 
+            std::vector<vector> points;
+            std::vector<std::vector<scalar>> qTimeSeries;
+            scalar x, y, z;
+            while (file >> x >> y >> z)
+            {
+                std::vector<scalar> qRow(times.size());
+                for (std::size_t k = 0; k < times.size(); ++k)
+                    file >> qRow[k];
+                points.emplace_back(x, y, z);
+                qTimeSeries.push_back(std::move(qRow));
+            }
+
+            //------------------------------------------------------------------
+            // 5. Find current simulation time position
+            //------------------------------------------------------------------
+            const scalar currentTime = this->db().time().value();
+            label t1 = 0, t2 = 0;
+
+            for (std::size_t i = 0; i < times.size(); ++i)
+            {
+                if (times[i] <= currentTime) t1 = static_cast<label>(i);
+                if (times[i] >= currentTime) { t2 = static_cast<label>(i); break; }
+            }
+            if (t2 < t1) t2 = t1; // Clamp if we are at or past last time
+
+            // Linear interpolation weight between t1 and t2
+            scalar alpha = 0.0;
+            if (t1 != t2 && times.size() > 1)
+                alpha = (currentTime - times[t1]) / (times[t2] - times[t1]);
+
+            //------------------------------------------------------------------
+            // 6. Interpolate in time for all data points
+            //------------------------------------------------------------------
+            std::vector<scalar> qVals(points.size());
+            if (times.size() == 1)
+            {
+                // Only one time column → constant heat flux
+                for (std::size_t j = 0; j < points.size(); ++j)
+                    qVals[j] = qTimeSeries[j][0];
+            }
+            else
+            {
+                // Linear interpolation between two time columns
+                for (std::size_t j = 0; j < points.size(); ++j)
+                {
+                    const scalar qLow  = qTimeSeries[j][t1];
+                    const scalar qHigh = qTimeSeries[j][t2];
+                    qVals[j] = qLow + alpha * (qHigh - qLow);
+                }
+            }
+
+            //------------------------------------------------------------------
+            // 7. Determine interpolation tolerance from mesh resolution
+            //------------------------------------------------------------------
+            scalar hMin = GREAT;
+            forAll(cf, i)
+            {
+                forAll(cf, j)
+                {
+                    if (i != j)
+                    {
+                        const scalar dist = mag(cf[i] - cf[j]);
+                        if (dist < hMin && dist > SMALL)
+                            hMin = dist;
+                    }
+                }
+            }
+            const scalar tol = hMin;
+
+            //------------------------------------------------------------------
+            // 8. Get thermal conductivity k(T) from physicalProperties
+            //------------------------------------------------------------------
+            const IOdictionary& physicalProperties =
+                db().lookupObject<IOdictionary>("physicalProperties");
+
+            List<scalar> kCoeffs;
+            bool   hasKCoeffs = false;
+            scalar constantK  = -1.0;
+
+            if (physicalProperties.found("mixture"))
+            {
+                const dictionary& mixture = physicalProperties.subDict("mixture");
+
+                if (mixture.found("transport"))
+                {
+                    const dictionary& transport = mixture.subDict("transport");
+
+                    if (transport.found("kappaCoeffs<8>"))
+                    {
+                        kCoeffs    = List<scalar>(transport.lookup("kappaCoeffs<8>"));
+                        hasKCoeffs = true;
+                    }
+                    else if (transport.found("kappa"))
+                    {
+                        constantK = readScalar(transport.lookup("kappa"));
+                    }
+                }
+            }
+
+            //------------------------------------------------------------------
+            // 9. Apply heat flux to each face
+            //------------------------------------------------------------------
+            forAll(cf, i)
+            {
+                //------------------------------------------------------------------
+                // 9a. Spatial interpolation: inverse distance weighting
+                //------------------------------------------------------------------
+                scalar qVal = 0.0;
+                scalar sumWeights = 0.0;
+
+                for (label j = 0; j < static_cast<label>(points.size()); ++j)
+                {
+                    const scalar dist = mag(cf[i] - points[j]);
+                    if (dist < tol && dist > SMALL)
+                    {
+                        const scalar w = 1.0 / dist;
+                        qVal       += w * qVals[j];
+                        sumWeights += w;
+                    }
+                }
+
+                //------------------------------------------------------------------
+                // 9b. Fallback: use weighted average of N nearest points
+                //------------------------------------------------------------------
+                if (sumWeights > SMALL)
+                {
+                    qVal /= sumWeights;
+                }
+                else
+                {
+                    const label Nnearest = 6;
+                    List<scalar> dists(points.size());
+                    for (label j = 0; j < static_cast<label>(points.size()); ++j)
+                        dists[j] = mag(cf[i] - points[j]);
+
+                    List<label> sortedIndices(points.size());
+                    forAll(sortedIndices, j) sortedIndices[j] = j;
+
+                    std::sort
+                    (
+                        sortedIndices.begin(),
+                        sortedIndices.end(),
+                        [&](const label& a, const label& b)
+                        {
+                            return dists[a] < dists[b];
+                        }
+                    );
+
+                    scalar weightedSum = 0.0;
+                    scalar weightTotal = 0.0;
+                    label used = 0;
+
+                    forAll(sortedIndices, jj)
+                    {
+                        const label j = sortedIndices[jj];
+                        const scalar dist = dists[j];
+
+                        if (dist > VSMALL)
+                        {
+                            const scalar w = 1.0 / dist;
+                            weightedSum += w * qVals[j];
+                            weightTotal += w;
+                            ++used;
+                        }
+                        if (used >= Nnearest) break;
+                    }
+
+                    if (weightTotal > VSMALL)
+                        qVal = weightedSum / weightTotal;
+                    else
+                        qVal = qVals[sortedIndices[0]];
+                }
+
+                //------------------------------------------------------------------
+                // 9c. Thermal conductivity at local temperature
+                //------------------------------------------------------------------
+                scalar k = 0.0;
+                if (hasKCoeffs)
+                {
+                    const scalar Tlocal = this->primitiveField()[i];
+                    forAll(kCoeffs, n)
+                        k += kCoeffs[n] * pow(Tlocal, n);
+                }
+                else if (constantK > 0)
+                {
+                    k = constantK;
+                }
+                else
+                {
+                    FatalErrorInFunction
+                        << "No kappaCoeffs<8> or kappa in physicalProperties"
+                        << exit(FatalError);
+                }
+
+                //------------------------------------------------------------------
+                // 9d. Apply Fourier law: q = -k * dT/dn
+                //------------------------------------------------------------------
+                // Set boundary condition as gradient (Neumann type)
+                // (Keeping your original sign since you said this version works for you)
+                refGrad[i] = qVal / k;
+                valFrac[i] = 0.0; // Means we use gradient, not fixed T
+            }
+        #};
+    }

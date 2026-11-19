@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "irflow"
+version = "0.1.0"
+description = "Synthetic diagnostic for IR cameras in magnetically confined fusion devices"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Matic Brank" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pyvista",
+    "tomli; python_version < '3.11'",
+]
+# Not on PyPI, install separately when the backend is used:
+#   riptrace_py (Riptrace backend), io_utils (external/io_utils, Gyrohit backend)
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"irflow.backends.tm.openfoam.template_files" = ["*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]

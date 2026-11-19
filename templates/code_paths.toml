@@ -1,0 +1,12 @@
+# Locations of external codes on this machine.
+#
+# Copy to ~/.config/irflow/code_paths.toml (or point $IRFLOW_CODE_PATHS to it) and edit.
+# Codes that are not listed here are expected to be on PATH.
+
+[openfoam]
+# OpenFOAM environment script that is sourced before running OpenFOAM utilities
+bashrc = "/path/to/OpenFOAM-dev/etc/bashrc"
+
+[elmerfem]
+# Directory with ElmerGrid and ElmerSolver executables
+# bin_dir = "/path/to/elmer/bin"
