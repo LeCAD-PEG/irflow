@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: irflow
-Version: 0.1.0
-Summary: Synthetic diagnostic for IR cameras
-Author: Matic Brank
-Requires-Python: >=3.8

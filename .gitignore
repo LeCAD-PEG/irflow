@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Editor backups
+*~
+\#*\#
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Solver / run outputs
+case.foam
+*.log
+
+# Large case data (meshes, equilibria) is kept out of git
+cases/*/data/

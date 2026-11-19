@@ -1,0 +1,51 @@
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant/steel_down";
+    object      physicalProperties;
+}
+
+thermoType
+{
+    type            heSolidThermo;
+    mixture         pureMixture;
+    transport       polynomialSolid;
+    thermo          eConst;
+    equationOfState rhoConst;
+    specie          specie;
+    energy          sensibleInternalEnergy;
+}
+
+mixture
+{
+    specie
+    {
+        molWeight       44.09;     // SiO
+    }
+
+    equationOfState
+    {
+        rho             3060;      // kg/m3
+    }
+
+    thermodynamics
+    {
+        Hf              0;
+        Cv              1100;       // consistent with Cp(T)
+    }
+
+    transport
+    {
+        // Cp(T) [J/kg/K] 2nd-order fit in Kelvin
+        // Cp = a0 + a1*T + a2*T^2
+        //CpCoeffs<8>     (  1.020e+03   1.05e-01   -3.50e-05   0 0 0 0 0 );
+
+	CpCoeffs<8>     (-5.627703e+02  6.852392e+00  -1.206368e-02  1.141774e-05  -5.490672e-09  1.052136e-12  0  0); // degree-5 fit  |  max error: 0.39%
+
+        // k(T) [W/m/K] 2nd-order fit in Kelvin
+        // k = b0 + b1*T + b2*T^2
+        //kappaCoeffs<8>  (  2.55e+01   -1.00e-02   2.50e-06   0 0 0 0 0 );
+	kappaCoeffs<8>  (2.177878e+01  -1.422731e-02  8.277203e-06  -2.795318e-09  0  0  0  0); // degree-3 fit  |  max error: 2.67%
+    }
+}
