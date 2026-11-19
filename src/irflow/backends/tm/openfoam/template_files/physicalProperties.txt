@@ -1,0 +1,36 @@
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant/@REGION@";
+    object      physicalProperties;
+}
+
+thermoType
+{
+    type            heSolidThermo;
+    mixture         pureMixture;
+@MODEL_LINES@    specie          specie;
+    energy          sensibleInternalEnergy;
+}
+
+mixture
+{
+    specie
+    {
+        molWeight       44.09; // SiO
+    }
+
+    equationOfState
+    {
+@DENSITY@    }
+
+    thermodynamics
+    {
+        Hf              0;
+@HEAT_CAPACITY@    }
+
+    transport
+    {
+@HEAT_CONDUCTIVITY@    }
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Mapping
 from importlib import resources
 from pathlib import Path
 from typing import TextIO
@@ -15,14 +16,33 @@ def read_template(file_name: str) -> str:
     return resources.files(TEMPLATES_PACKAGE).joinpath(file_name).read_text(encoding="utf-8")
 
 
+def fill(text: str, values: Mapping[str, object]) -> str:
+    """Replace each ``@NAME@`` in ``text`` by ``str(values[NAME])``.
+
+    ``@NAME@`` is used instead of ``{}`` or ``$`` because OpenFOAM files use both.
+    """
+    for name, value in values.items():
+        placeholder = f"@{name}@"
+        if placeholder not in text:
+            raise KeyError(f"Placeholder {placeholder} not found in template")
+        text = text.replace(placeholder, str(value))
+    return text
+
+
+def fill_template(file_name: str, values: Mapping[str, object] | None = None) -> str:
+    """Return a template file from ``template_files/`` with its placeholders filled in."""
+    return fill(read_template(file_name), values or {})
+
+
 def write_openfoam_plasma_bc(file_to_write: TextIO, initial_temperature: float) -> None:
     """Write the body of the coded heat-flux BC that reads ``constant/data.txt``.
 
     The BC interpolates the heat flux from the field line tracing points to the patch
     faces and applies it as a temperature gradient ``q / k(T)``.
     """
-    text = read_template("plasma_bc_coded_mixed.txt")
-    file_to_write.write(text.replace("@INITIAL_TEMPERATURE@", str(initial_temperature)))
+    file_to_write.write(
+        fill_template("plasma_bc_coded_mixed.txt", {"INITIAL_TEMPERATURE": initial_temperature})
+    )
 
 
 def write_openfoam_sh_script(file_to_write: TextIO, of_case_path: Path, bashrc: Path) -> None:

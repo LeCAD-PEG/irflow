@@ -43,6 +43,10 @@ Before solving, the thermal model checks that its plasma surface lies on the hea
 surface (catches m/mm mix-ups and shifted meshes); set `mapping_tolerance` [m] in its config
 to change the allowed distance.
 
+Configs are plain dicts. They are checked when a step is created, before anything runs:
+missing keys, misspelled keys (with a "did you mean ..." hint) and bad `time_stepping`
+values raise a `ValueError` listing all problems.
+
 Complete examples are in `cases/`.
 
 ## Test

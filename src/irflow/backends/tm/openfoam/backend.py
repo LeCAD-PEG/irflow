@@ -33,6 +33,19 @@ def resolve_openfoam_bashrc(openfoam_bashrc: str | None) -> Path:
     return bashrc_path
 
 
+BOUNDARY_CONDITION_TYPES = ("heat_flux", "htc", "temperature")
+
+
+def check_boundary_conditions(boundary_conditions: dict[str, Any]) -> None:
+    """Raise ValueError for boundary conditions the case builder cannot write."""
+    for patch, condition in boundary_conditions.items():
+        if condition.get("type") not in BOUNDARY_CONDITION_TYPES:
+            raise ValueError(
+                f"Boundary condition '{patch}': type must be one of "
+                f"{BOUNDARY_CONDITION_TYPES}, got {condition.get('type')!r}"
+            )
+
+
 def write_script(path: Path, of_case_path: Path, bashrc: Path, commands: list[str]) -> Path:
     """Write an executable bash script that loads OpenFOAM and runs ``commands`` in the case."""
     with open(path, "w") as script:
@@ -133,6 +146,7 @@ class BackendOpenFOAM(ThermalModelBackend):
         self.openfoam_case_name = openfoam_case_name
         self.initial_temperature = initial_temperature
         self.boundary_conditions = boundary_conditions
+        check_boundary_conditions(boundary_conditions or {})
         self.material_properties = material_properties
 
         self.is_transient = time_stepping["type"].lower() != "steady"

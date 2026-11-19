@@ -17,6 +17,7 @@ config = {
     "power_loss": 1e6,  # Power in the scrape-off layer [W]
     "lambda_main": 0.01,  # main decay length [m]
     "point_omp": [1.3391667, 0],  # Location of separatrix/LCFS at outer midplane R, Z [m]
+    "hpc": {"backend": "mpi", "omp_threads": 8},  # OpenMP tracing; omit for serial
 }
 
 flt_case = FieldLineTracing(

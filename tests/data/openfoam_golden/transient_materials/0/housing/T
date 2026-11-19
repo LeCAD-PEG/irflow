@@ -1,0 +1,48 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      T;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 0 0 1 0 0 0];
+
+internalField   uniform 373.0;
+
+boundaryField
+{
+    housing_to_sample
+    {
+        type            coupledTemperature;
+        value           uniform 373.0;
+    }
+
+    housing_to_screws
+    {
+        type            coupledTemperature;
+        value           uniform 373.0;
+    }
+
+    cooled
+    {
+        type            externalWallHeatFluxTemperature;
+        mode            flux;
+        kappaMethod     solidThermo;
+        h               uniform 17283;
+        Ta              uniform 300.0;
+        value           uniform 373.0;
+   }
+
+    loaded
+    {
+        type            externalWallHeatFluxTemperature;
+        mode            flux;
+        kappaMethod     solidThermo;
+        q               uniform 1000.0;
+        value           uniform 373.0;
+   }
+
+}
+// ************************************************************************* //

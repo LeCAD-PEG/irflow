@@ -10,6 +10,7 @@ from riptrace_py.riptrace_case import RipTraceCase
 from riptrace_py.riptrace_mesh import Shadow, Target
 
 from irflow.backends.base import FieldLineTracingBackend
+from irflow.config import check_config
 from irflow.data import HeatFluxField, SurfaceMesh
 
 
@@ -28,6 +29,7 @@ class BackendRiptrace(FieldLineTracingBackend):
         lambda_main: float,
         point_omp: list[float],
         numerical_parameters: Any = None,
+        hpc: dict[str, Any] | None = None,
     ) -> None:
         # input parameters
         self.target_mesh_path = target_mesh_path
@@ -41,6 +43,10 @@ class BackendRiptrace(FieldLineTracingBackend):
         self.lambda_main = lambda_main  # main decay length [m]
         self.point_omp = point_omp  # Location of separatrix/LCFS at outer midplane R, Z [m]
         self.numerical_params = numerical_parameters  # numerical parameters for FLT
+        # Execution resources, e.g. {"backend": "mpi", "omp_threads": 8} for OpenMP;
+        # default: Riptrace's serial CPU backend
+        self.hpc = hpc or {}
+        check_config(self.hpc, required=[], optional=["backend", "omp_threads"], where="hpc")
 
         # backend data format (private)
         self.__target_riptrace: Target | None = None
@@ -170,12 +176,22 @@ class BackendRiptrace(FieldLineTracingBackend):
             magnetic_field=self.__magnetic_field_riptrace,
             magnetic_flux=self.__magnetic_flux_riptrace,
             case_path=riptrace_case_dir,
+            hpc_params=self.get_hpc_params(),
         )
 
         self.case_riptrace.compute_wetted_area()
         self.case_riptrace.compute_power_deposition(
             self.power_loss, self.lambda_main, 1 / 2, self.point_omp
         )
+
+    def get_hpc_params(self) -> Any:
+        """Riptrace execution resources (in this process) from the ``hpc`` config."""
+        from riptrace_py.hpc import RipTraceHPCParams
+
+        hpc_params = RipTraceHPCParams(backend=self.hpc.get("backend", "cpu"), mode="inprocess")
+        if "omp_threads" in self.hpc:
+            hpc_params.omp_threads = self.hpc["omp_threads"]
+        return hpc_params
 
     def get_result(self) -> HeatFluxField:
         """Heat flux on each target triangle [W/m^2]."""

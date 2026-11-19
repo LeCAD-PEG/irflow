@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from irflow.backends.base import ThermalModelBackend
+from irflow.config import check_config, check_time_stepping
 from irflow.data import HeatFluxField, TemperatureField
 from irflow.io import load_heat_flux
 
@@ -50,11 +51,20 @@ class ThermalModel:
     def get_backend(self, backend_code: str) -> ThermalModelBackend:
         """Create the backend for ``backend_code`` from the step config."""
         # Backends are imported here so that only the chosen code has to be installed.
+        where = f"ThermalModel config (backend '{backend_code}')"
+        common_optional = ["time_stepping", "mapping_tolerance"]
         time_stepping = self.config.get("time_stepping", {"type": "steady"})
+        check_time_stepping(time_stepping, where=f"{where}, time_stepping")
 
         if backend_code.lower() == "elmerfem":
             from irflow.backends.tm.elmerfem import BackendElmerFEM
 
+            check_config(
+                self.config,
+                required=["mesh_file", "mesh_type", "sif_file", "plasma_bc_id"],
+                optional=common_optional,
+                where=where,
+            )
             return BackendElmerFEM(
                 mesh_file=self.config["mesh_file"],
                 mesh_type=self.config["mesh_type"],
@@ -66,6 +76,18 @@ class ThermalModel:
         if backend_code.lower() == "openfoam":
             from irflow.backends.tm.openfoam.backend import BackendOpenFOAM
 
+            check_config(
+                self.config,
+                required=["mesh_file", "mesh_type", "plasma_bc_name"],
+                optional=common_optional
+                + [
+                    "openfoam_bashrc",
+                    "initial_temperature",
+                    "boundary_conditions",
+                    "material_properties",
+                ],
+                where=where,
+            )
             return BackendOpenFOAM(
                 mesh_file=self.config["mesh_file"],
                 mesh_type=self.config["mesh_type"],

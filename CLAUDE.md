@@ -65,12 +65,13 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
 | `src/irflow/io/` | `save()` / `load_heat_flux()` / `load_temperature()`; `vtk.py` (`.vtp`, `.pvd` series) |
 | `src/irflow/mapping.py` | `check_overlap`: TM plasma surface must lie on the FLT surface |
 | `src/irflow/code_paths.py` | machine config for external codes |
+| `src/irflow/config.py` | `check_config` (missing/unknown keys, typo hints), `check_time_stepping` |
 | `src/irflow/steps/field_line_tracing.py` | `FieldLineTracing`; backends imported lazily |
 | `src/irflow/steps/thermal_model.py` | `ThermalModel`; `input_data=` to run alone; `mapping_tolerance` config |
 | `src/irflow/backends/base.py` | ABCs `FieldLineTracingBackend`, `ThermalModelBackend` (`run`, `get_result`) |
 | `src/irflow/backends/flt/riptrace.py` | Riptrace in-process via `riptrace_py` (`riptrace_case`, `riptrace_mesh`, `io_reader`) |
 | `src/irflow/backends/flt/gyrohit.py` | reads precomputed GYROHIT heat flux from VTK |
-| `src/irflow/backends/tm/openfoam/` | `backend.py` (run, pre-solve overlap check, read time series), `case_builder.py` (dict writers), `templates.py` + `template_files/` (coded BC, shell header) |
+| `src/irflow/backends/tm/openfoam/` | `backend.py` (run, pre-solve overlap check, read time series), `case_builder.py` (fills dictionary templates), `templates.py` + `template_files/` (`@NAME@` placeholders) |
 | `src/irflow/backends/tm/elmerfem.py` | sif parser/writer, UNV→Elmer mesh, per-triangle BCs, pyvista output reader |
 | `cases/` | study drivers; large data in `cases/*/data/` (git-ignored) |
 | `tests/` | pytest suite (no external codes needed) |
@@ -96,9 +97,11 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
   itself and only supports constant `kappa` or `kappaCoeffs<8>` — `table` heat conductivity
   would make the solver stop with FatalError.
 - `case_builder.write_physicalProperties`: without `material_properties` it silently uses
-  SiO2-like defaults; `molWeight` hardcoded.
-- `case_builder.py` and `elmerfem.py` still have >100-char lines and style issues; they are
-  left for the templating rework (Phase 4).
+  SiO2-like defaults; `molWeight` hardcoded. The OpenFOAM model names written for table /
+  polynomial properties (`DENSITY_MODELS` etc. in `case_builder.py`) look inconsistent
+  (e.g. `hPolynomial` as solid transport, `eIcoTabulated` as equation of state) and were never
+  run; only constant properties are verified. Kept byte-identical on purpose (golden tests).
+- `elmerfem.py` still has >100-char lines, style issues and mypy errors (rework in Phase 4).
 
 ## Plan and status
 
@@ -117,12 +120,13 @@ longer written to CWD, Elmer `bc_id` parsing for ids ≥ 10), 30 tests.
 3. ✅ `ThermalModel(input_data=...)` so the thermal model can run alone.
 4. ✅ `backends/base.py` ABCs; Riptrace, Gyrohit, OpenFOAM, Elmer adapted.
 5. ✅ `mapping.py` overlap check (OpenFOAM: exports plasma patch at t=0 before solving).
-6. ⏳ Config validation — design question open (see below).
+6. ✅ Config validation with plain dicts (`irflow.config`, user chose this over dataclasses):
+   missing/unknown keys with typo hints, time stepping, OpenFOAM BC types — at step creation.
 
 Verified by real runs (scratch dir): Gyrohit→OpenFOAM mousetrap (10 steps, identical T to
 Phase 1), ElmerFEM alone on MAST-U with old Riptrace `Q_cells` (T identical to the March run),
 Riptrace MAST-U benchmark with current `riptrace_py` (heat flux matches the earlier run; serial
-tracing takes ~10 min).
+tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, identical result).
 
 **Phase 3 — End-to-end with primary backends:** Riptrace → OpenFOAM → raysect
 1. `OpticalModel` step + raysect backend (camera geometry, emissivity, spectral band), one
@@ -131,13 +135,15 @@ tracing takes ~10 min).
 
 **Phase 4 — Breadth and robustness**
 1. ElmerFEM: single plasma BC + interpolation function instead of per-triangle BCs.
-2. OpenFOAM: Python-side interpolation + stock BC; dictionaries from template files.
+2. OpenFOAM: Python-side interpolation + stock BC (physics change — ask first);
+   ✅ dictionaries from template files, golden-file tests (`tests/test_openfoam_golden.py`,
+   regenerate with `IRFLOW_UPDATE_GOLDEN=1` only for intended output changes).
 3. L2G, HeatFEM, optika backends; radiosity option for the optical step.
 4. Golden-file tests for writers; integration tests that skip when a solver is missing.
 
 ## Open questions (ask the user)
 
-- Phase 2 item 6: per-backend config dataclasses vs. validating dict keys only.
+- OpenFOAM model names for table/polynomial material properties (see known issues).
 
 - Optical inputs beyond the context file: emissivity / reflectivity per material, camera
   spectral band, and whether the optical scene mesh (for reflections) differs from the TM

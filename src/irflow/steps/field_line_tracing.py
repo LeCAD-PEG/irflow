@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from irflow.backends.base import FieldLineTracingBackend
+from irflow.config import check_config
 from irflow.data import HeatFluxField
 
 
@@ -36,9 +37,27 @@ class FieldLineTracing:
     def get_backend(self, backend_code: str) -> FieldLineTracingBackend:
         """Create the backend for ``backend_code`` from the step config."""
         # Backends are imported here so that only the chosen code has to be installed.
+        where = f"FieldLineTracing config (backend '{backend_code}')"
+
         if backend_code.lower() == "riptrace":
             from irflow.backends.flt.riptrace import BackendRiptrace
 
+            check_config(
+                self.config,
+                required=[
+                    "target_mesh_path",
+                    "target_mesh_type",
+                    "shadow_mesh_path",
+                    "shadow_mesh_type",
+                    "equilibrium_path",
+                    "equilibrium_type",
+                    "power_loss",
+                    "lambda_main",
+                    "point_omp",
+                ],
+                optional=["hpc"],
+                where=where,
+            )
             return BackendRiptrace(
                 target_mesh_path=self.config["target_mesh_path"],
                 shadow_mesh_path=self.config["shadow_mesh_path"],
@@ -49,18 +68,30 @@ class FieldLineTracing:
                 power_loss=self.config["power_loss"],
                 lambda_main=self.config["lambda_main"],
                 point_omp=self.config["point_omp"],
+                hpc=self.config.get("hpc"),
             )
 
         if backend_code.lower() == "gyrohit":
             from irflow.backends.flt.gyrohit import BackendGyrohit
 
+            check_config(
+                self.config,
+                required=["target_mesh_path", "target_mesh_type"],
+                optional=[
+                    "shadow_mesh_path",
+                    "shadow_mesh_type",
+                    "equilibrium_path",
+                    "equilibrium_type",
+                ],
+                where=where,
+            )
             return BackendGyrohit(
                 target_mesh_path=self.config["target_mesh_path"],
-                shadow_mesh_path=self.config["shadow_mesh_path"],
-                equilibrium_path=self.config["equilibrium_path"],
+                shadow_mesh_path=self.config.get("shadow_mesh_path"),
+                equilibrium_path=self.config.get("equilibrium_path"),
                 target_mesh_type=self.config["target_mesh_type"],
-                shadow_mesh_type=self.config["shadow_mesh_type"],
-                equilibrium_type=self.config["equilibrium_type"],
+                shadow_mesh_type=self.config.get("shadow_mesh_type"),
+                equilibrium_type=self.config.get("equilibrium_type"),
             )
 
         raise ValueError(

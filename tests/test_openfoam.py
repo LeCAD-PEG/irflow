@@ -145,3 +145,15 @@ def test_openfoam_backend_needs_bashrc_and_reports_no_result(openfoam_bashrc: Pa
     tm = ThermalModel(backend_code="openfoam", config=config)
     with pytest.raises(RuntimeError, match="not been run"):
         tm.backend.get_result()
+
+
+def test_unknown_boundary_condition_type(openfoam_bashrc: Path) -> None:
+    config = {
+        "mesh_file": "mesh.unv",
+        "mesh_type": "unv",
+        "plasma_bc_name": "plasmaBC",
+        "openfoam_bashrc": str(openfoam_bashrc),
+        "boundary_conditions": {"const_T": {"type": "fixed_temperature", "value": 373}},
+    }
+    with pytest.raises(ValueError, match="const_T"):
+        ThermalModel(backend_code="openfoam", config=config)
