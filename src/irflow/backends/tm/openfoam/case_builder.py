@@ -177,7 +177,8 @@ class OpenFOAMCaseBuilder:
     def write_controlDict(self, regions: bool = False) -> None:
         region_solvers = ""
         if regions:
-            lines = "".join(f"   {region}      solid;\n" for region in self.get_region_boundary_map())
+            regions_list = self.get_region_boundary_map()
+            lines = "".join(f"   {region}      solid;\n" for region in regions_list)
             region_solvers = f"regionSolvers\n{{\n{lines}}}\n"
 
         if self.time_settings["type"] == "steady":

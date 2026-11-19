@@ -7,7 +7,7 @@ from typing import Any
 
 from irflow.backends.base import ThermalModelBackend
 from irflow.config import check_config, check_time_stepping
-from irflow.data import HeatFluxField, TemperatureField
+from irflow.data import CameraImages, HeatFluxField, TemperatureField
 from irflow.io import load_heat_flux
 
 
@@ -99,11 +99,26 @@ class ThermalModel:
                 material_properties=self.config.get("material_properties"),
             )
 
+        if backend_code.lower() == "simple1d":
+            from irflow.backends.tm.simple1d import BackendSimple1D
+
+            check_config(
+                self.config,
+                required=["thickness", "material_properties", "back_boundary"],
+                optional=common_optional
+                + ["initial_temperature", "n_points", "first_cell_size"],
+                where=where,
+            )
+            return BackendSimple1D(self.config)
+
         raise ValueError(
-            f"Unknown thermal model backend '{backend_code}'. Supported: 'elmerfem', 'openfoam'."
+            f"Unknown thermal model backend '{backend_code}'. "
+            "Supported: 'elmerfem', 'openfoam', 'simple1d'."
         )
 
-    def set_irflow_pass_data(self, data: HeatFluxField | TemperatureField) -> None:
+    def set_irflow_pass_data(
+        self, data: HeatFluxField | TemperatureField | CameraImages
+    ) -> None:
         """Receive the heat flux from the previous step."""
         if not isinstance(data, HeatFluxField):
             raise TypeError(f"ThermalModel needs a HeatFluxField, got {type(data).__name__}")
