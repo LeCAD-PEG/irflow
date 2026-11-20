@@ -66,7 +66,8 @@ irflow chains three simulation steps into a synthetic IR-camera diagnostic for t
   `/home/brankm/data/irflow_studies` (cases' `root_dir`; `/home/brankm/work/irflow_studies` is a
   symlink to it). Claude's verification runs go to `/home/brankm/data/irflow_verification`,
   never into `irflow_studies` (cases use `overwrite=True`).
-- Work happens on branch `package-restructure` (created 2026-11-19), not on `main`.
+- Branch `package-restructure` (created 2026-11-19) was merged into `main` (fast-forward) on
+  2026-11-20. Use feature branches for new work and merge when the user asks.
 
 ## Code map
 
@@ -202,7 +203,7 @@ tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, iden
   `019d65e` config validation + OpenFOAM templates + Riptrace OpenMP, `89b0423` simple1d,
   `17d8faa` optical step (raysect), `789c7b9` simple1d automatic first cell, `c9f1f31` optical
   cameras / apparent temperature / materials / reflections, `cd6040e` GYROHIT → OpenFOAM →
-  raysect RFA case with housing scene. 175 tests pass. `main` is still at `ff384ce`.
+  raysect RFA case with housing scene. 175 tests pass. All merged into `main` on 2026-11-20.
 - Pushing: the default GitHub SSH key (`mbrank`, forced for github.com in `~/.ssh/config`)
   cannot write to `LeCAD-PEG/irflow`; the user said to use the `fsbrank` key. Working command:
   `GIT_SSH_COMMAND="ssh -F /dev/null -i $HOME/.ssh/fsbrankgithub -o IdentitiesOnly=yes
@@ -218,7 +219,7 @@ tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, iden
   last working manual run) is now written. Elmer's VTK writer crashed on long absolute
   `Mesh DB` paths (now relative). Riptrace modules were renamed in `riptrace_py`
   (`mag_riptrace_case` → `riptrace_case`, etc.); backend follows.
-- Not done yet: commit/merge to `main`, Riptrace → OpenFOAM → raysect on WEST, realistic
+- Not done yet: Riptrace → OpenFOAM → raysect on WEST, realistic
   tungsten emissivity, deleting the old debug outputs in `src/` (`elmer_mesh/`, `*.vtk` —
   the user should delete them; the auto-mode check blocked Claude from doing it).
 
@@ -233,7 +234,7 @@ project/scratch filesystem for all `root_dir`s.
 
 ### 1. Environment
 
-1. `git clone` the repo, `git checkout package-restructure`,
+1. `git clone` the repo (branch `main`),
    `git submodule update --init --depth 1 external/raysect` (`external/io_utils` needs access
    to `mbrank/io_utils` and is not imported by irflow — skip it if it fails).
 2. Python ≥ 3.10 venv (or the cluster's Python module), then `pip install -e ".[test]"`.
