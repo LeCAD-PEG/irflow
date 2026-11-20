@@ -169,7 +169,8 @@ tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, iden
    field reproduced inside triangles (test fails if barycentric weights are permuted).
 2. ✅ `simple1d` thermal backend (subagent, merged 2026-11-19).
 3. Reference cases producing IR images: `cases/cea_mousetrap/gyrohit_simple1d_raysect.py`
-   (full chain, no external solver); Riptrace → OpenFOAM → raysect still to run.
+   (full chain, no external solver) and item 5; Riptrace → OpenFOAM → raysect (WEST) still to
+   run — see "Instructions for an AI agent on an HPC machine" below.
 4. ✅ Optical upgrade (subagent, merged 2026-11-19): calibrated cameras (OpenCV parameters,
    per-pixel vectors), apparent temperature (default assumed emissivity = target material's),
    material library with physical tungsten, grey materials, reflections, `scene` components.
@@ -179,6 +180,10 @@ tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, iden
    raysect, own pinhole camera 0.5 m above the RFA top looking straight down, 100×100 px, 2°;
    `scene` = `cases/cea_mousetrap/data/housing_surface.vtp` (housing_1 + housing_2 outer
    surfaces, built by `make_housing_scene.py`), tungsten, 373 K; RFA grey SiO2-like ε 0.8.
+   ✅ Ran end to end 2026-11-19 (16.5 min on the workstation: OpenFOAM ~15 min, 201 images
+   ~1.5 min). Apparent peak 7597 K vs true edge peak 9010 K at 200 ms (0.175 mm pixels
+   average the thin hot edge band); tungsten housing appears at 267 K instead of 373 K
+   because the image is converted with the RFA's ε 0.8 (tungsten ε ≈ 0.026).
 
 **Phase 4 — Breadth and robustness**
 1. ElmerFEM: single plasma BC + interpolation function instead of per-triangle BCs.
@@ -187,6 +192,134 @@ tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, iden
    regenerate with `IRFLOW_UPDATE_GOLDEN=1` only for intended output changes).
 3. L2G, HeatFEM, optika backends; radiosity option for the optical step.
 4. Golden-file tests for writers; integration tests that skip when a solver is missing.
+
+## Work log
+
+**2026-11-19/20, workstation session (Claude + subagents in git worktrees):**
+
+- Commits on `package-restructure` (oldest first): `edcc2ce` cleanup, `60164ee` src/irflow
+  package + bug fixes, `e72d875` typed step data / saving / standalone steps / overlap check,
+  `019d65e` config validation + OpenFOAM templates + Riptrace OpenMP, `89b0423` simple1d,
+  `17d8faa` optical step (raysect), `789c7b9` simple1d automatic first cell, `c9f1f31` optical
+  cameras / apparent temperature / materials / reflections, `cd6040e` GYROHIT → OpenFOAM →
+  raysect RFA case with housing scene. 175 tests pass. `main` is still at `ff384ce`.
+- Pushing: the default GitHub SSH key (`mbrank`) cannot write to `LeCAD-PEG/irflow`; the user
+  said to use the `fsbrank` key (`~/.ssh/fsbrankgithub`).
+- Verified with real runs (outputs in `/home/brankm/data/irflow_verification`):
+  Gyrohit → OpenFOAM mousetrap, full 0.2 s, 200 steps in 15 min; raysect images of it (oblique
+  320×256: 201 images in 5.3 min; top view 100×100: 44 s); Riptrace MAST-U serial vs OpenMP
+  (identical heat flux, 10 min vs 32 s); ElmerFEM MAST-U alone (T identical to the March run);
+  Gyrohit → simple1d → raysect (21 images in 57 s).
+- Study outputs moved from `/home/brankm/work/irflow_studies` to the data disk (symlink left).
+- Fixed on the way: the mousetrap OpenFOAM case diverged ("negative initial temperature")
+  with `Gauss linear corrected`; `Gauss linear limited corrected 0.33` (as in the user's
+  last working manual run) is now written. Elmer's VTK writer crashed on long absolute
+  `Mesh DB` paths (now relative). Riptrace modules were renamed in `riptrace_py`
+  (`mag_riptrace_case` → `riptrace_case`, etc.); backend follows.
+- Not done yet: commit/merge to `main`, Riptrace → OpenFOAM → raysect on WEST, realistic
+  tungsten emissivity, deleting the old debug outputs in `src/` (`elmer_mesh/`, `*.vtk` —
+  the user should delete them; the auto-mode check blocked Claude from doing it).
+
+## Instructions for an AI agent on an HPC machine: large WEST case
+
+Goal: run Riptrace → OpenFOAM (or simple1d first) → raysect on WEST divertor geometry, much
+larger than the CEA mousetrap (one WEST lower-divertor target quarter alone has ~348k
+triangles). Work in small, verified steps and report to the user after each one. Everything
+in "Standards" above applies: ask before architectural or physics changes, commit only when
+asked, never write into the repository or the home directory's small disk — use the cluster's
+project/scratch filesystem for all `root_dir`s.
+
+### 1. Environment
+
+1. `git clone` the repo, `git checkout package-restructure`,
+   `git submodule update --init --depth 1 external/raysect` (`external/io_utils` needs access
+   to `mbrank/io_utils` and is not imported by irflow — skip it if it fails).
+2. Python ≥ 3.10 venv (or the cluster's Python module), then `pip install -e ".[test]"`.
+   raysect: `pip install raysect==0.8.1` or build `external/raysect` (`pip install .`);
+   keep version 0.8.1 (the barycentric `MeshIntersection` API is used). `opencv-python` is
+   needed only for `opencv` cameras.
+3. `riptrace_py` is not on PyPI: clone the riptrace repo and build it following its README
+   (`./compile_cpu.sh` for CPU/OpenMP, `./compile_alpaka.sh` with `CUDA_ARCH=...` for GPU),
+   then make `import riptrace_py` work in the same venv. Check with
+   `python -c "from riptrace_py.riptrace_case import RipTraceCase"`.
+4. OpenFOAM: irflow needs `foamMultiRun` (OpenFOAM-dev / OpenFOAM 11+, openfoam.org) plus
+   `ideasUnvToFoam`, `splitMeshRegions`, `foamToVTK`. Put its `etc/bashrc` into
+   `~/.config/irflow/code_paths.toml` (template: `templates/code_paths.toml`) or set
+   `$IRFLOW_CODE_PATHS`. If OpenFOAM comes as a module, a small wrapper bashrc that runs
+   `module load ...` works.
+5. `python -m pytest` must pass (175 tests, no external codes needed) before anything else.
+6. Run the small chain `cases/cea_mousetrap/gyrohit_simple1d_raysect.py` with `root_dir` set to
+   scratch, if its input `target.vtk` is copied over — it checks the whole install in ~1 min.
+
+### 2. WEST input data (ask the user where it is on the cluster)
+
+On the workstation it is in `/home/brankm/work/west` (git-LFS repo):
+
+- `pfcflux_benchmark_2D/` and `benchmark/`: PFCFLUX benchmark. Targets
+  `lo_div_graphite_q1a.dat`, `lo_div_graphite_q1b.dat` (Nastran, ~348k CTRIA3 each);
+  shadowing meshes `DVT_Baffle_targets_*.dat`, `DVT_low_sect_front_*.dat`,
+  `DVT_up_sect_front_*.dat`; equilibrium `benchmark/mag data/WEST_SN53585_t8.0.txt3d`
+  (3D field + psi from TSbase, as used by PFCFLUX) and `pfcflux_benchmark_2D/WEST_500kA_Far.*`;
+  PFCFLUX reference results in `benchmark/results`; the PFCFLUX setup script
+  `west_collab_slovenie.py` shows how the benchmark was configured.
+- `/home/brankm/work/WEST_thermal_modelling/openfoam_case`: an existing hand-made OpenFOAM
+  case (not a UNV mesh) — ask the user which thermal mesh to use.
+
+**Known traps with this data (check each, report, ask before changing code):**
+
+- The `.dat` files are in **millimetres** (R ≈ 2064) and use **decimal commas**
+  (`2064,053540070`) in long-format `GRID*` cards. irflow's Riptrace backend calls
+  `Target.load_dat(path)` with riptrace's default `units="m"` — a `units` option has to be
+  added to the backend/config (small change, but tell the user), and check whether riptrace's
+  dat reader accepts decimal commas.
+- Shadow meshes: irflow takes **one** shadow mesh path and only `"vtk"` (current riptrace has
+  no `Shadow.load_dat`). Convert and merge the DVT shadowing `.dat` files into one VTK in metres
+  first (a small script in `cases/west/`, like `make_housing_scene.py`).
+- Equilibrium: use `"equilibrium_type": "pfcflux"` with `"equilibrium_path": {"txt": ...}`.
+  riptrace's `read_pfcflux_data` has sign/scale options (`flip_b_phi`, `scale_*`) that irflow
+  does not pass yet; compare the Riptrace heat flux against the PFCFLUX results before trusting
+  it.
+- `power_loss`, `lambda_main`, `point_omp` (R, Z of the separatrix at the outer midplane) are
+  not documented anywhere in irflow for WEST: take them from the PFCFLUX script/results or
+  ask the user. Never guess physics parameters silently.
+
+### 3. Running at scale
+
+- Run irflow inside a batch job on one node (`sbatch` with `--cpus-per-task` = cores),
+  e.g. `srun python cases/west/<case>.py`. Log to a file on scratch.
+- **Riptrace:** `"hpc": {"backend": "mpi", "omp_threads": <cores>}` (OpenMP in-process;
+  "mpi" is riptrace's name for its threaded CPU backend). Single-GPU in-process backends
+  (`"alpaka"`, `"alpaka3"`) may work if riptrace was built with them — untested through irflow.
+  riptrace's multi-GPU / SLURM submission mode (`mode="slurm"`, `alpaka3_mgpu`; see the
+  riptrace repo's `slurm_scale_west_*gpu.slm`) is **not wired into irflow** (the backend forces
+  `mode="inprocess"`); ask the user before adding it. Start with a cut-down target (a few
+  thousand triangles) to check the setup, then the full target.
+- **Thermal model, recommended order:** `simple1d` first (vectorised, fine for 1e6 triangles,
+  needs only the FLT mesh), then OpenFOAM. OpenFOAM limits to know before running it big:
+  irflow runs `foamMultiRun` **serially** (no `decomposePar`/`mpirun`), and the coded plasma
+  BC interpolates by brute force over **all** FLT points for **every** face at **every** time
+  step — O(N_faces × N_FLT) per step, prohibitive for WEST-size meshes. Fixing this
+  (Python-side interpolation + stock BC, parallel runs) is Phase 4 item 2 and changes the
+  physics setup: propose it to the user, do not just do it. ElmerFEM (one BC per triangle)
+  does not scale at all.
+- The thermal mesh's plasma patch must lie on the FLT target in the same frame and in metres;
+  `check_overlap` stops the run otherwise. Do not raise `mapping_tolerance` to silence it —
+  find the unit/frame mismatch.
+- **Output size:** every saved time rewrites the whole mesh (VTK). N_times × mesh size can
+  reach many GB for WEST; use a coarser `time_step` or fewer steps, and write to scratch.
+- **raysect:** set `"processes"` to the job's core count (the default uses all CPUs of the
+  node, which oversubscribes shared nodes). Materials are Python (~60 µs per reflection per
+  core): start with a small image (e.g. 64×64, `pixel_samples` 4, `max_reflections` 1),
+  measure, then scale up. Tungsten from raysect's data has ε ≈ 0.026 (smooth, room
+  temperature) — still an open question with the user; report it with any WEST image.
+- No camera calibration exists for WEST yet: use a `pinhole` camera and say so; switch to
+  `opencv` / `vectors` cameras when the user provides a calibration.
+
+### 4. Reporting
+
+After each step, report to the user: what ran, wall time, peak memory, the key numbers
+(heat flux max/integral vs PFCFLUX, temperature range, image range), any warnings, and what
+you changed in the code (with tests). Add a dated entry to "Work log" above.
 
 ## Open questions (ask the user)
 
