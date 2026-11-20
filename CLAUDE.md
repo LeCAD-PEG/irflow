@@ -203,8 +203,10 @@ tracing ~10 min, OpenMP `"hpc": {"backend": "mpi", "omp_threads": 8}` 32 s, iden
   `17d8faa` optical step (raysect), `789c7b9` simple1d automatic first cell, `c9f1f31` optical
   cameras / apparent temperature / materials / reflections, `cd6040e` GYROHIT → OpenFOAM →
   raysect RFA case with housing scene. 175 tests pass. `main` is still at `ff384ce`.
-- Pushing: the default GitHub SSH key (`mbrank`) cannot write to `LeCAD-PEG/irflow`; the user
-  said to use the `fsbrank` key (`~/.ssh/fsbrankgithub`).
+- Pushing: the default GitHub SSH key (`mbrank`, forced for github.com in `~/.ssh/config`)
+  cannot write to `LeCAD-PEG/irflow`; the user said to use the `fsbrank` key. Working command:
+  `GIT_SSH_COMMAND="ssh -F /dev/null -i $HOME/.ssh/fsbrankgithub -o IdentitiesOnly=yes
+  -o AddressFamily=inet" git push`. `package-restructure` is on origin since 2026-11-20.
 - Verified with real runs (outputs in `/home/brankm/data/irflow_verification`):
   Gyrohit → OpenFOAM mousetrap, full 0.2 s, 200 steps in 15 min; raysect images of it (oblique
   320×256: 201 images in 5.3 min; top view 100×100: 44 s); Riptrace MAST-U serial vs OpenMP
